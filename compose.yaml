@@ -1,0 +1,43 @@
+name: learn-asaru
+services:
+  api:
+    image: learn-asaru-api:${RELEASE_TAG:-20261021}
+    build:
+      context: .
+      target: api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_PORT: "4000"
+      DATABASE_URL: ${DATABASE_URL:?Set production TLS database URL}
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-}
+      SESSION_SECRET: ${SESSION_SECRET:?Set a fresh random session secret}
+      APP_ORIGIN: https://learn.asaru.mn
+      PASSWORD_RESET_ORIGIN: https://learn.asaru.mn
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 30s
+  web:
+    image: learn-asaru-web:${RELEASE_TAG:-20261021}
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  caddy_data:
+  caddy_config:

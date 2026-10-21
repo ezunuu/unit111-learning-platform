@@ -1,0 +1,41 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+backups/
+
+# Local credentials, database exports and generated reports
+*.dump
+*.backup
+*.bak
+*.sql.gz
+*.sqlite
+*.sqlite3
+*.db
+*.pem
+*.key
+*.p12
+*.pfx
+.pgpass
+.npmrc
+secrets/
+dumps/
+reports/
+.env*
+!.env.example
+
+# SQL dumps are private; versioned schema migrations remain allowed
+*.sql
+!apps/api/drizzle/*.sql
+
+# Local cloud context and tool credentials
+.neon
+.neon/
+
+# Production secrets
+deploy.env
+
+/release-manifest.json

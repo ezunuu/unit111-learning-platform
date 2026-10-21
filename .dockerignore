@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.git
+**/.env
+**/.env.*
+**/backups
+**/reports
+**/*.dump
+**/*.backup
+**/*.pem
+**/*.key
+deploy.env

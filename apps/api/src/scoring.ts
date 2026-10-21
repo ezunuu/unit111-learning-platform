@@ -1,0 +1,1 @@
+export function answersMatch(selected:string[],correct:string[]):boolean{if(selected.length===0||correct.length===0)return false;const a=[...selected].sort(),b=[...correct].sort();return a.length===b.length&&a.every((id,index)=>id===b[index])}

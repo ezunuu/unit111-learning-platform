@@ -1,0 +1,71 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import {eq,sql} from 'drizzle-orm';
+import {db} from './db.js';
+import * as s from './schema.js';
+import {adminContentRouter} from './admin-content.js';
+
+const enabled=process.env.UNIT111_TEST_DATABASE_INTEGRATION==='1';
+
+test('PostgreSQL Excel import preview validates aliases and imports only as Draft with duplicate protection', {skip:!enabled}, async()=>{
+  const[category]=await db.select().from(s.categories).limit(1);assert.ok(category);
+  const[user]=await db.insert(s.users).values({username:`xlsx_it_${crypto.randomUUID()}`,fullName:'Import Integration Admin',passwordHash:'integration-only-not-a-login-secret',role:'admin',isActive:true,mustChangePassword:false}).returning({id:s.users.id,fullName:s.users.fullName});
+  const suffix=crypto.randomUUID();
+  const question={categoryId:category.id,questionText:`Integration Excel question ${suffix}?`,questionType:'single_choice',difficulty:'medium',explanation:'Workbook explanation preserved.',sourceDocument:'BK117 C-2 Training Manual CAT B1 — Chapter 02 Fuselage',sourceRevision:'Manual revision test fixture',sourceSection:'Fuselage',sourceLocation:'Manual page 22',sourceReference:`xlsx-${suffix}`,xp:10,options:[{text:'A response'},{text:'B response'},{text:'C response'},{text:'D response'}],correctIndexes:[2],correctAnswerText:'C response'};
+  let currentRole:'admin'|'employee'='admin';const app=express();app.use(express.json());app.use((req,_res,next)=>{req.user={id:user.id,username:'import-integration',fullName:user.fullName,role:currentRole,mustChangePassword:false};next()});app.use('/admin',adminContentRouter);
+  const server=await new Promise<ReturnType<typeof app.listen>>(resolve=>{const value=app.listen(0,'127.0.0.1',()=>resolve(value))});const address=server.address();assert.ok(address&&typeof address!=='string');
+  const request=async(path:string,body:unknown)=>{const response=await fetch(`http://127.0.0.1:${address.port}/admin${path}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return{response,data:await response.json() as any}};
+  try{
+    const preview=await request('/questions/import/preview',{sourceFormat:'xlsx',questions:[question]});assert.equal(preview.response.status,200);assert.equal(preview.data.readyCount,1);assert.equal(preview.data.rows.length,0);
+    const sourceFree={...question,questionText:'Standalone independent prompt '+crypto.randomUUID(),explanation:undefined,sourceReference:null,sourceDocument:undefined,sourceRevision:undefined,sourceSection:undefined,sourceLocation:undefined};
+    const sourceFreePreview=await request('/questions/import/preview',{sourceFormat:'xlsx',questions:[sourceFree]});assert.equal(sourceFreePreview.response.status,200);assert.equal(sourceFreePreview.data.readyCount,1);
+    const sourceFreeImport=await request('/questions/import',{fingerprint:(await import('node:crypto')).createHash('sha256').update(suffix+'-source-free').digest('hex'),sourceFormat:'xlsx',questions:[sourceFree]});assert.equal(sourceFreeImport.response.status,201);assert.equal(sourceFreeImport.data.status,'draft');
+    const mismatch=await request('/questions/import/preview',{sourceFormat:'xlsx',questions:[{...question,correctAnswerText:'not the C response'}]});assert.ok(mismatch.data.rows.some((row:any)=>row.message.includes('таарахгүй')));
+    const imported=await request('/questions/import',{fingerprint:(await import('node:crypto')).createHash('sha256').update(suffix).digest('hex'),sourceFormat:'xlsx',questions:[question]});assert.equal(imported.response.status,201);assert.equal(imported.data.status,'draft');
+    const[id]=imported.data.questionIds as string[];const[stored]=await db.select().from(s.questions).where(eq(s.questions.id,id));assert.equal(stored.explanation,question.explanation);assert.equal(stored.sourceLocation,question.sourceLocation);assert.equal(stored.sourceRevision,question.sourceRevision);assert.equal(stored.status,'draft');
+    const options=await db.select().from(s.questionOptions).where(eq(s.questionOptions.questionId,id)).orderBy(s.questionOptions.optionOrder);assert.deepEqual(options.map(row=>row.optionText),question.options.map(row=>row.text));
+    const duplicate=await request('/questions/import/preview',{sourceFormat:'xlsx',questions:[question]});assert.ok(duplicate.data.rows.some((row:any)=>row.message.includes('Өмнө үүссэн')));
+    const [course]=await db.insert(s.courses).values({title:'Import target',createdBy:user.id,defaultLessonPassPercentage:85,lessonCompletionXp:12}).returning();
+    const [chapter]=await db.insert(s.chapters).values({courseId:course.id,title:'General',chapterOrder:0}).returning();
+    await db.insert(s.lessons).values({title:'Existing lesson',categoryId:category.id,chapterId:chapter.id,description:'',content:'',lessonOrder:3,createdBy:user.id});
+    const lessonQuestions=[crypto.randomUUID(),crypto.randomUUID()].map(questionText=>({...question,questionText,sourceReference:null}));
+    const fingerprint=(await import('node:crypto')).createHash('sha256').update(suffix+'-lesson').digest('hex');
+    const lessonBody={fingerprint,sourceFormat:'xlsx',questions:lessonQuestions,lesson:{title:'Uploaded lesson',chapterId:crypto.randomUUID() as string}};
+    const unavailable=await request('/questions/import',lessonBody);assert.equal(unavailable.response.status,409);assert.equal(unavailable.data.error.code,'CHAPTER_UNAVAILABLE');
+    assert.equal((await db.select().from(s.questionImports).where(eq(s.questionImports.fingerprint,fingerprint))).length,0);
+    const beforeInvalid=await db.select({id:s.questions.id}).from(s.questions);assert.ok(!beforeInvalid.some(q=>q.id===unavailable.data.questionIds?.[0]));
+    lessonBody.lesson.chapterId=chapter.id;
+    const lessonImport=await request('/questions/import',lessonBody);assert.equal(lessonImport.response.status,201);assert.ok(lessonImport.data.lessonId);
+    const [lesson]=await db.select().from(s.lessons).where(eq(s.lessons.id,lessonImport.data.lessonId));
+    assert.equal(lesson.chapterId,chapter.id);assert.equal(lesson.status,'draft');assert.equal(lesson.title,'Uploaded lesson');assert.equal(lesson.lessonOrder,4);assert.equal(lesson.passPercentage,85);assert.equal(lesson.completionXp,12);
+    const linked=await db.select().from(s.lessonQuestions).where(eq(s.lessonQuestions.lessonId,lesson.id)).orderBy(s.lessonQuestions.questionOrder);
+    assert.deepEqual(linked.map(q=>q.questionId),lessonImport.data.questionIds);assert.deepEqual(linked.map(q=>q.questionOrder),[0,1]);
+    const previewGet=async()=>{const response=await fetch(`http://127.0.0.1:${address.port}/admin/lessons/${lesson.id}/preview`);return {response,data:await response.json() as any}};
+    const noProgress=async()=>JSON.stringify((await db.execute(sql`select (select count(*) from learning_attempts) attempts,(select count(*) from lesson_progress) progress,(select count(*) from xp_transactions) xp`)).rows);
+    const beforePreview=await noProgress();const draftPreview=await previewGet();assert.equal(draftPreview.response.status,200);assert.equal(draftPreview.data.mode,'read_only_preview');assert.equal(draftPreview.data.review.readyToPublish,false);assert.equal(draftPreview.data.review.blockingQuestions.length,2);
+    await db.update(s.lessons).set({theoryRequired:true}).where(eq(s.lessons.id,lesson.id));
+    const missingTheory=await previewGet();assert.ok(missingTheory.data.review.reasons.some((reason:string)=>reason.includes('блок алга')));
+    await db.insert(s.lessonContentBlocks).values({lessonId:lesson.id,blockOrder:0,blockType:'text',content:{text:'Read-only theory fixture'},createdBy:user.id});
+    const theoryPreview=await previewGet();assert.ok(theoryPreview.data.review.reasons.some((reason:string)=>reason.includes('материалыг баталгаажуулна')));assert.equal(theoryPreview.data.contentBlocks[0].content.text,'Read-only theory fixture');assert.equal(theoryPreview.data.placement.chapterTitle,'General');
+    assert.equal(await noProgress(),beforePreview);
+    currentRole='employee';assert.equal((await previewGet()).response.status,403);currentRole='admin';
+    const repeat=await request('/questions/import',lessonBody);assert.equal(repeat.response.status,409);
+    assert.equal((await db.select().from(s.lessons).where(eq(s.lessons.chapterId,chapter.id))).length,2);
+    const conflicting=await request('/questions/import',{...lessonBody,quizId:crypto.randomUUID()});assert.equal(conflicting.response.status,400);
+    await db.update(s.chapters).set({status:'archived'}).where(eq(s.chapters.id,chapter.id));
+    const archived=await request('/questions/import',{...lessonBody,fingerprint:'a'.repeat(64),questions:[{...question,questionText:crypto.randomUUID(),sourceReference:null}]});assert.equal(archived.response.status,409);assert.equal(archived.data.error.code,'CHAPTER_UNAVAILABLE');
+    const [existingChapter]=await db.insert(s.chapters).values({courseId:course.id,title:'Existing import chapter',chapterOrder:1}).returning();
+    const multiQuestions=Array.from({length:4},()=>({...question,questionText:crypto.randomUUID(),sourceReference:null}));
+    const multiFingerprint=(await import('node:crypto')).createHash('sha256').update(suffix+'-multi').digest('hex');
+    const multiPlan={courseId:course.id,groups:[{chapterTitle:'Existing import chapter',lessonTitle:'One',questionIndexes:[0,1]},{chapterTitle:'New chapter',lessonTitle:'Two',questionIndexes:[2,3]}]};
+    const invalidMulti=await request('/questions/import',{fingerprint:multiFingerprint,questions:multiQuestions,lessonGroups:{...multiPlan,groups:[{...multiPlan.groups[0],questionIndexes:[0,0]}]}});assert.equal(invalidMulti.response.status,400);
+    const multi=await request('/questions/import',{fingerprint:multiFingerprint,questions:multiQuestions,lessonGroups:multiPlan});assert.equal(multi.response.status,201);assert.equal(multi.data.createdLessons.length,2);assert.equal(multi.data.lessonId,null);
+    for(const [index,item]of multi.data.createdLessons.entries()){const [storedLesson]=await db.select().from(s.lessons).where(eq(s.lessons.id,item.id));assert.equal(storedLesson.status,'draft');assert.equal(storedLesson.passPercentage,85);if(index===0)assert.equal(storedLesson.chapterId,existingChapter.id);const assigned=await db.select().from(s.lessonQuestions).where(eq(s.lessonQuestions.lessonId,item.id)).orderBy(s.lessonQuestions.questionOrder);assert.deepEqual(assigned.map(q=>q.questionId),multi.data.questionIds.slice(index*2,index*2+2));}
+    const [newChapter]=await db.select().from(s.chapters).where(eq(s.chapters.id,(await db.select().from(s.lessons).where(eq(s.lessons.id,multi.data.createdLessons[1].id)))[0].chapterId!));assert.equal(newChapter.status,'draft');assert.equal(newChapter.chapterOrder,2);
+    const categoryName=`Import category ${suffix}`;
+    const createdCategory=await request('/categories',{name:categoryName});assert.equal(createdCategory.response.status,201);assert.equal(createdCategory.data.item.name,categoryName);
+    const normalizedDuplicate=await request('/categories',{name:`  ${categoryName.toUpperCase()}  `});assert.equal(normalizedDuplicate.response.status,409);
+    currentRole='employee';const forbidden=await request('/categories',{name:`Forbidden ${suffix}`});assert.equal(forbidden.response.status,403);
+  }finally{await new Promise<void>(resolve=>server.close(()=>resolve()))}
+});

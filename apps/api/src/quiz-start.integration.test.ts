@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import express,{type Request} from 'express';
+import {once} from 'node:events';
+import {and,eq} from 'drizzle-orm';
+import {createQuizStartRouter} from './quiz-start-router.js';
+import {db,pool} from './db.js';
+import * as s from './schema.js';
+
+test('published quiz with an existing in-progress attempt resumes through the API without creating another attempt',{skip:process.env.UNIT111_TEST_DATABASE_INTEGRATION!=='1'},async t=>{
+  const url=new URL(process.env.DATABASE_URL||'');
+  assert.equal(url.pathname.replace(/^\//,''),'unit111_admin_test');
+  assert.ok(['localhost','127.0.0.1','::1'].includes(url.hostname));
+  const quizId='6f71ed92-e178-4892-a38f-de746fdcfbbc';
+  const[quiz]=await db.select({id:s.quizzes.id,status:s.quizzes.status}).from(s.quizzes).where(eq(s.quizzes.id,quizId)).limit(1);
+  if(!quiz||quiz.status!=='published')return t.skip('Read-only fixture is no longer a published quiz');
+  const[attempt]=await db.select({id:s.quizAttempts.id,userId:s.quizAttempts.userId,status:s.quizAttempts.status}).from(s.quizAttempts).where(and(eq(s.quizAttempts.quizId,quizId),eq(s.quizAttempts.status,'in_progress'))).limit(1);
+  if(!attempt)return t.skip('Read-only fixture no longer has an in-progress attempt');
+  const app=express();app.use(express.json());
+  app.use((req:Request,_res,next)=>{req.user={id:attempt.userId,username:'integration-test',fullName:'Integration Test',role:'employee',mustChangePassword:false};next()});
+  app.use(createQuizStartRouter());
+  const server=app.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(async()=>{server.close();await once(server,'close');await pool.end()});
+  const address=server.address();assert.ok(address&&typeof address==='object');
+  const response=await fetch(`http://127.0.0.1:${address.port}/quizzes/${quizId}/start`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+  assert.equal(response.status,200);
+  const body=await response.json() as {attempt:{id:string;resumed:boolean};questions:{id:string}[]};
+  assert.equal(body.attempt.id,attempt.id);assert.equal(body.attempt.resumed,true);assert.ok(body.questions.length>0);
+  const after=await db.select({id:s.quizAttempts.id,status:s.quizAttempts.status}).from(s.quizAttempts).where(and(eq(s.quizAttempts.quizId,quizId),eq(s.quizAttempts.userId,attempt.userId),eq(s.quizAttempts.status,'in_progress')));
+  assert.equal(after.length,1);assert.equal(after[0].id,attempt.id);
+});

@@ -1,0 +1,1 @@
+ALTER TABLE "questions" ADD CONSTRAINT "questions_duplicate_of_questions_id_fk" FOREIGN KEY ("duplicate_of") REFERENCES "public"."questions"("id") ON DELETE set null ON UPDATE no action;

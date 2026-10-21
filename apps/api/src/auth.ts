@@ -1,0 +1,7 @@
+import type {Request,Response,NextFunction} from 'express';import {db} from './db.js';import {users} from './schema.js';import {eq} from 'drizzle-orm';
+export type Role='admin'|'training_manager'|'team_leader'|'employee';
+declare module 'express-session'{interface SessionData{userId?:string;csrf?:string;authVersion?:number}}
+declare global{namespace Express{interface Request{user?:{id:string;username:string;fullName:string;role:Role;mustChangePassword:boolean}}}}
+export async function attachUser(req:Request,_res:Response,next:NextFunction){try{if(req.session.userId){const[u]=await db.select({id:users.id,username:users.username,fullName:users.fullName,role:users.role,mustChangePassword:users.mustChangePassword,isActive:users.isActive,authVersion:users.authVersion}).from(users).where(eq(users.id,req.session.userId)).limit(1);if(u?.isActive&&(req.session.authVersion??0)===u.authVersion)req.user=u;}next()}catch(e){next(e)}}
+export function requireAuth(req:Request,res:Response,next:NextFunction){if(!req.user)return res.status(401).json({error:{code:'UNAUTHENTICATED',message:'Нэвтэрнэ үү.'}});next()}
+export function requireRoles(...roles:Role[]){return(req:Request,res:Response,next:NextFunction)=>{if(!req.user)return res.status(401).json({error:{code:'UNAUTHENTICATED',message:'Нэвтэрнэ үү.'}});if(!roles.includes(req.user.role))return res.status(403).json({error:{code:'FORBIDDEN',message:'Энэ үйлдэл хийх эрхгүй байна.'}});next()}}

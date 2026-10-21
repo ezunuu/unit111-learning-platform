@@ -1,0 +1,37 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {once} from 'node:events';
+import express from 'express';
+import {eq} from 'drizzle-orm';
+import {db,pool} from './db.js';
+import * as s from './schema.js';
+import {createSelfServiceAuthRouter,resetTokenHash} from './self-service-auth.js';
+
+test('self registration and reset enforce learner role, CSRF, expiring single-use tokens and session revocation',{skip:process.env.UNIT111_TEST_DATABASE_INTEGRATION!=='1'},async(t)=>{
+ assert.match(new URL(process.env.DATABASE_URL!).pathname,/^\/unit111_it_/);
+ process.env.UNIT111_API_NO_LISTEN='1';delete process.env.RESEND_API_KEY;delete process.env.MAIL_FROM;
+ const {app}=await import('./index.js');const server=app.listen(0,'127.0.0.1');await once(server,'listening');const address=server.address();assert.ok(address&&typeof address==='object');const base=`http://127.0.0.1:${address.port}/api/v1`;
+ const mails:{to:string;resetUrl:string}[]=[];const mailApp=express();mailApp.use(express.json());mailApp.use(createSelfServiceAuthRouter({mailReady:()=>true,resetOrigin:()=> 'http://localhost:5173',sendMail:async mail=>{mails.push(mail)}}));const mailServer=mailApp.listen(0,'127.0.0.1');await once(mailServer,'listening');const mailAddress=mailServer.address();assert.ok(mailAddress&&typeof mailAddress==='object');
+ t.after(async()=>{server.close();mailServer.close();await Promise.all([once(server,'close'),once(mailServer,'close')]);await pool.end()});
+ const csrfResponse=await fetch(base+'/auth/csrf');let csrf=(await csrfResponse.json() as any).csrfToken;let anonymousCookie=csrfResponse.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
+ const post=async(path:string,body:unknown,cookie=anonymousCookie,token=csrf)=>{const r=await fetch(base+path,{method:'POST',headers:{'content-type':'application/json',cookie:path==='/auth/login'?'':cookie,'x-csrf-token':token},body:JSON.stringify(body)});return{status:r.status,data:await r.json() as any,cookie:r.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')}};
+ const email=`signup_${crypto.randomUUID()}@example.com`,password=crypto.randomUUID(),newPassword=crypto.randomUUID();const registration={fullName:'Learner fixture',email,password};
+ assert.equal((await post('/auth/register',registration,anonymousCookie,'invalid')).status,403);
+ assert.equal((await post('/auth/register',{...registration,role:'admin'})).status,400);
+ assert.equal((await post('/auth/register',registration)).status,201);
+ assert.equal((await post('/auth/register',{...registration,email:email.toUpperCase()})).status,409);
+ const [user]=await db.select().from(s.users).where(eq(s.users.email,email));assert.equal(user.role,'employee');assert.equal(user.mustChangePassword,false);assert.notEqual(user.passwordHash,password);
+ const signedIn=await post('/auth/login',{login:email,password});assert.equal(signedIn.status,200);
+ const freshAnonymous=await fetch(base+'/auth/csrf');csrf=(await freshAnonymous.json() as any).csrfToken;anonymousCookie=freshAnonymous.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
+ const forgot=async(value:string)=>{const r=await fetch(`http://127.0.0.1:${mailAddress.port}/auth/forgot-password`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:value})});return {status:r.status,data:await r.json() as any}};
+ const known=await forgot(email),unknown=await forgot('unknown_'+crypto.randomUUID()+'@example.com');assert.equal(known.status,200);assert.deepEqual(known.data,unknown.data);assert.equal(mails.length,1);
+ const token=new URLSearchParams(new URL(mails[0].resetUrl).hash.slice(1)).get('token')!;assert.ok(token);
+ const [stored]=await db.select().from(s.passwordResetTokens).where(eq(s.passwordResetTokens.userId,user.id));assert.notEqual(stored.tokenHash,token);assert.equal(stored.tokenHash,resetTokenHash(token));
+ assert.equal((await post('/auth/reset-password',{token:'0'.repeat(64),newPassword})).status,400);
+ const results=await Promise.all([post('/auth/reset-password',{token,newPassword}),post('/auth/reset-password',{token,newPassword})]);assert.deepEqual(results.map(r=>r.status).sort(),[200,400]);
+ const oldSession=await fetch(base+'/auth/me',{headers:{cookie:signedIn.cookie}});assert.equal(oldSession.status,401);
+ assert.equal((await post('/auth/login',{login:email,password})).status,401);assert.equal((await post('/auth/login',{login:email,password:newPassword})).status,200);
+ const expired=crypto.randomUUID().replaceAll('-','').padEnd(64,'a');await db.insert(s.passwordResetTokens).values({userId:user.id,tokenHash:resetTokenHash(expired),expiresAt:new Date(Date.now()-1000)});
+ assert.equal((await post('/auth/reset-password',{token:expired,newPassword:crypto.randomUUID()})).status,400);
+ const unavailable=await post('/auth/forgot-password',{email});assert.equal(unavailable.status,503);assert.equal(unavailable.data.error.code,'RESET_UNAVAILABLE');
+});

@@ -1,0 +1,1 @@
+ALTER TABLE "quizzes" ADD CONSTRAINT "quizzes_passing_percentage_check" CHECK ("quizzes"."passing_percentage" between 0 and 100);

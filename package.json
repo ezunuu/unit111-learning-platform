@@ -1,0 +1,10 @@
+{
+  "name": "unit111-aviation-quiz",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "engines": { "node": ">=22.0.0 <23.0.0" },
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {"dev": "concurrently -k \"npm:dev --workspace @unit111/api\" \"npm:dev --workspace @unit111/web\"", "build": "npm run build --workspace @unit111/api && npm run build --workspace @unit111/web", "typecheck": "npm run typecheck --workspace @unit111/api && npm run typecheck --workspace @unit111/web", "db:generate": "npm run db:generate --workspace @unit111/api", "db:migrate": "npm run db:migrate --workspace @unit111/api", "db:seed": "npm run db:seed --workspace @unit111/api"},
+  "devDependencies": {"concurrently":"^9.1.2","typescript":"^5.7.3"}
+}
+

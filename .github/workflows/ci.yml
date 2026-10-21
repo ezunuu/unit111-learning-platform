@@ -1,0 +1,58 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @unit111/api typecheck
+      - run: pnpm --filter @unit111/web typecheck
+      - run: pnpm --filter @unit111/api test
+        env:
+          DATABASE_URL: postgresql://localhost:5432/unit111_ci_not_used
+          UNIT111_TEST_DATABASE_INTEGRATION: "0"
+      - run: pnpm --filter @unit111/web test
+      - run: pnpm --filter @unit111/api build
+      - run: pnpm --filter @unit111/web build
+
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: unit111_admin_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @unit111/api test:integration
+        env:
+          DATABASE_URL: postgresql://postgres:ci-only-password@localhost:5432/unit111_admin_test
+          DIRECT_DATABASE_URL: postgresql://postgres:ci-only-password@localhost:5432/unit111_admin_test

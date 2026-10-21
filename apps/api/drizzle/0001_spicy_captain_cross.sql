@@ -1,0 +1,2 @@
+ALTER TABLE "competitions" ADD COLUMN "quiz_id" uuid NOT NULL;--> statement-breakpoint
+ALTER TABLE "competitions" ADD CONSTRAINT "competitions_quiz_id_quizzes_id_fk" FOREIGN KEY ("quiz_id") REFERENCES "public"."quizzes"("id") ON DELETE no action ON UPDATE no action;

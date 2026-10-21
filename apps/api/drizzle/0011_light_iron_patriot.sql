@@ -1,0 +1,2 @@
+ALTER TABLE "questions" ADD COLUMN "source_reference" varchar(100);--> statement-breakpoint
+CREATE UNIQUE INDEX "questions_source_reference_idx" ON "questions" USING btree ("source_document","source_reference") WHERE "questions"."source_reference" is not null;
