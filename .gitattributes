@@ -1,0 +1,3 @@
+* text=auto
+# Preserve existing migration bytes: Drizzle records SHA-256 of SQL contents.
+apps/api/drizzle/*.sql -text

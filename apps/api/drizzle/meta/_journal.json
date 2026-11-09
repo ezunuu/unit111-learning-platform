@@ -155,6 +155,20 @@
       "when": 1792545009692,
       "tag": "0021_brown_strong_guy",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792545009693,
+      "tag": "0022_learner_categories",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792545009694,
+      "tag": "0023_main_topics_and_audiences",
+      "breakpoints": true
     }
   ]
 }

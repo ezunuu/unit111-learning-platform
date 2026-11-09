@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { prepareQuestionImport } from '../src/question-import-mapping.ts';
+import { buildImportLessonGroups, prepareQuestionImport } from '../src/question-import-mapping.ts';
 
 const headers = ['ID','Topic','Question Type','Question','Option A','Option B','Option C','Option D','Correct Answer','Correct Answer Text','Explanation','Source','Source Page','XP','Difficulty'];
 const categories = [{ id: 'topic-id', name: 'Main Airframe' }];
@@ -85,6 +85,30 @@ test('category matching ignores case and repeated whitespace',()=>{
   const [mapped]=prepareQuestionImport([h,row],categories,{sourceDocumentFallback:'Manual'});
   assert.equal(mapped.categoryId,'topic-id');
   assert.equal(mapped.categoryName,'Main Airframe');
+});
+
+test('treats ENGINEER as learner audience and maps it to the existing general bank category',()=>{
+  const h=['category','questionText','questionType','options','correctIndexes','explanation','sourceDocument'];
+  const row=['ENGINEER','Tail boom supports the tail rotor?','single_choice','A|B|C|D','0','Explanation','BK117 C-2 Training Manual, Chapter 03: Tail Unit'];
+  const choices=[{id:'general-id',name:'Ерөнхий техникийн мэдлэг'}];
+  const [mapped]=prepareQuestionImport([h,row],choices);
+  assert.equal(mapped.audience,'engineer');
+  assert.equal(mapped.originalCategoryName,'ENGINEER');
+  assert.equal(mapped.categoryId,'general-id');
+  assert.equal(mapped.categoryName,'Ерөнхий техникийн мэдлэг');
+  assert.deepEqual(mapped.errors,[]);
+  assert.match(mapped.warnings.join(' '),/суралцагчийн ангилал/);
+});
+
+test('splits chapter sourced questions into draft lesson plan groups of ten',()=>{
+  const rows=Array.from({length:70},(_,index)=>({sourceDocument:'Airbus Helicopters BK117C-2 Training Manual CAT B1, Chapter 03: Tail Unit',sourceSection:`Section ${index+1}`}));
+  const groups=buildImportLessonGroups(rows);
+  assert.equal(groups.length,7);
+  assert.deepEqual(groups.map(group=>group.questionIndexes.length),[10,10,10,10,10,10,10]);
+  assert.ok(groups.every(group=>group.chapterTitle==='03 — Tail Unit'));
+  assert.equal(groups[0].lessonTitle,'Tail Unit — Хичээл 01');
+  assert.equal(groups[6].lessonTitle,'Tail Unit — Хичээл 07');
+  assert.deepEqual(groups.flatMap(group=>group.questionIndexes),Array.from({length:70},(_,index)=>index));
 });
 
  test('imports questions without any source columns',()=>{const h=['category','questionText','questionType','options','correctIndexes','explanation'];const [row]=prepareQuestionImport([h,['Main Airframe','No source question?','single_choice','First|Second|Third|Fourth','0','Optional supporting explanation']],categories);assert.equal(row.sourceDocument,'');assert.equal(row.sourceLocation,'');assert.deepEqual(row.errors,[])});

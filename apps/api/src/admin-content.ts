@@ -50,6 +50,7 @@ const questionInput=z.object({
   correctIndexes:z.array(z.number().int().min(0).max(7)).min(1).max(8),
   correctAnswerText:z.string().trim().max(1000).nullable().optional(),
 });
+const importQuestionInput=questionInput.extend({reuseQuestionId:z.string().uuid().optional()});
 const questionEditInput=questionInput.extend({
   categoryId:z.string().uuid().optional(),
   questionText:z.string().trim().min(1).max(3000),
@@ -62,6 +63,27 @@ const questionEditInput=questionInput.extend({
   correctIndexes:z.array(z.number().int().min(0).max(3)).length(1),
 });
 const hasUniqueIds=(ids:string[])=>new Set(ids).size===ids.length;
+
+const normalizeImportValue=(value:string)=>value.normalize('NFKC').replace(/[\p{Cf}\s]+/gu,' ').trim().toLocaleLowerCase('mn');
+async function loadImportReuseCandidate(query:any,id:string,lock=false){
+  let statement=query.select({id:s.questions.id,questionText:s.questions.questionText,questionType:s.questions.questionType,difficulty:s.questions.difficulty,explanation:s.questions.explanation,status:s.questions.status,archivedAt:s.questions.archivedAt,duplicateOf:s.questions.duplicateOf,categoryId:s.questions.categoryId,sourceDocument:s.questions.sourceDocument,sourceRevision:s.questions.sourceRevision,sourceSection:s.questions.sourceSection,sourceLocation:s.questions.sourceLocation,xp:s.questions.xp}).from(s.questions).where(eq(s.questions.id,id)).limit(1);
+  if(lock)statement=statement.for('update');
+  const [question]=await statement;if(!question)return null;
+  const options=await query.select({id:s.questionOptions.id,text:s.questionOptions.optionText}).from(s.questionOptions).where(eq(s.questionOptions.questionId,id)).orderBy(asc(s.questionOptions.optionOrder));
+  const correct=await query.select({optionId:s.questionCorrectOptions.optionId}).from(s.questionCorrectOptions).where(eq(s.questionCorrectOptions.questionId,id));
+  return{...question,options,correctIndexes:options.map((option:{id:string},index:number)=>correct.some((answer:{optionId:string})=>answer.optionId===option.id)?index:-1).filter((index:number)=>index>=0)};
+}
+function importReuseCheck(incoming:z.infer<typeof questionInput>,existing:NonNullable<Awaited<ReturnType<typeof loadImportReuseCandidate>>>){
+  const samePrompt=normalizeImportValue(incoming.questionText)===normalizeImportValue(existing.questionText);
+  const sameOptions=incoming.options.length===existing.options.length&&incoming.options.every((option,index)=>normalizeImportValue(option.text)===normalizeImportValue(existing.options[index]?.text??''));
+  const sameCorrect=[...incoming.correctIndexes].sort((a,b)=>a-b).join(',')===[...existing.correctIndexes].sort((a,b)=>a-b).join(',');
+  const sameExplanation=normalizeImportValue(incoming.explanation??'')===normalizeImportValue(existing.explanation??'');
+  const sameCore=samePrompt&&incoming.questionType===existing.questionType&&incoming.difficulty===existing.difficulty&&incoming.xp===existing.xp&&sameOptions&&sameCorrect&&sameExplanation;
+  const canReuse=existing.status!=='archived'&&!existing.archivedAt&&!existing.duplicateOf&&sameCore;
+  const reason=existing.status==='archived'||existing.archivedAt||existing.duplicateOf?'Архивласан эсвэл давхардал гэж тэмдэглэсэн асуултыг дахин ашиглахгүй.':!samePrompt?'Асуултын текст яг таарахгүй; зөвхөн төстэй асуулт байна.':!sameOptions||!sameCorrect?'Сонголт эсвэл зөв хариулт зөрсөн тул дахин ашиглах боломжгүй.':!sameExplanation?'Тайлбар зөрсөн тул өмнөх асуултыг автоматаар ашиглахгүй.':!sameCore?'Асуултын төрөл, хүндрэл эсвэл XP зөрсөн тул өмнөх асуултыг ашиглахгүй.':'';
+  const metadataDiffers=incoming.categoryId!==existing.categoryId||incoming.sourceDocument!==existing.sourceDocument||incoming.sourceRevision!==existing.sourceRevision||incoming.sourceSection!==existing.sourceSection||incoming.sourceLocation!==existing.sourceLocation||incoming.sourceReference!==existing.sourceReference;
+  return{canReuse,reason,metadataDiffers};
+}
 
 const sourceMetadataIds=z.array(z.string().uuid()).min(1).max(100).refine(hasUniqueIds,'Давхардсан асуултын ID байна.');
 const sourceMetadataPatch=z.object({sourceDocument:z.string().trim().min(3).max(500).optional(),sourceRevision:z.string().trim().min(1).max(200).optional(),sourceSection:z.string().trim().min(1).max(200).optional(),sourceLocation:z.string().trim().min(1).max(200).optional()}).strict().refine(value=>Object.values(value).some(field=>field!==undefined),'Шинэчлэх source талбараа сонгоно уу.');
@@ -132,7 +154,7 @@ adminContentRouter.get('/lessons',requireAuth,async(req,res,next)=>{
 
 adminContentRouter.post('/questions/import',requireAuth,requireRoles('admin','training_manager'),async(req,res,next)=>{
   try{
-    const body=z.object({fingerprint:z.string().regex(/^[a-f0-9]{64}$/i),quizId:z.string().uuid().optional(),lesson:z.object({title:z.string().trim().min(1).max(200),chapterId:z.string().uuid()}).optional(),lessonGroups:lessonGroupsInput.optional(),sourceFormat:z.enum(['xlsx','csv']).optional(),questions:z.array(questionInput).min(1).max(200)}).safeParse(req.body);
+    const body=z.object({fingerprint:z.string().regex(/^[a-f0-9]{64}$/i),quizId:z.string().uuid().optional(),lesson:z.object({title:z.string().trim().min(1).max(200),chapterId:z.string().uuid()}).optional(),lessonGroups:lessonGroupsInput.optional(),sourceFormat:z.enum(['xlsx','csv']).optional(),questions:z.array(importQuestionInput).min(1).max(200)}).safeParse(req.body);
     if(!body.success)return fail(res,400,'VALIDATION','Импортын файлын мэдээлэл эсвэл мөрийн тоо буруу байна.');
     if(body.data.lessonGroups){if(body.data.lesson||body.data.quizId)return fail(res,400,'VALIDATION','Импортын нэг л горим сонгоно уу.');const issue=lessonGroupError(body.data.lessonGroups,body.data.questions.length);if(issue)return fail(res,400,'VALIDATION',issue);}
     if(body.data.lesson&&(body.data.quizId||body.data.questions.length>100))return fail(res,400,'VALIDATION','Нэг хичээлд 1–100 асуулт оруулна. Сорил болон шинэ хичээлийг зэрэг сонгож болохгүй.');
@@ -140,12 +162,20 @@ adminContentRouter.post('/questions/import',requireAuth,requireRoles('admin','tr
     const errors:{row:number;message:string}[]=[];
     body.data.questions.forEach((question,index)=>{const error=validateQuestionDraft(question);if(error)errors.push({row:index+2,message:error});if(question.correctAnswerText){const answer=question.options[question.correctIndexes[0]]?.text??'';const normalizeAnswer=(value:string)=>normalizeQuestionText(value).replace(/[\p{P}\p{S}\s]/gu,'');if(normalizeAnswer(question.correctAnswerText)!==normalizeAnswer(answer))errors.push({row:index+2,message:'Зөв хариултын тэмдэглэгээ болон текст таарахгүй байна.'});}if(body.data.sourceFormat==='xlsx'&&(question.options.length!==4||question.questionType!=='single_choice'||question.correctIndexes.length!==1))errors.push({row:index+2,message:'Excel асуулт дөрвөн сонголттой, A/B/C/D-ээс нэг зөв хариулттай байна.'});});
     if(errors.length)return res.status(400).json({error:{code:'ROW_VALIDATION',message:'Алдаатай мөрүүдийг засаж дахин импортлоно уу.'},rows:errors});
-    const categoryIds=[...new Set(body.data.questions.map(question=>question.categoryId))];
+    if(body.data.questions.some(question=>question.reuseQuestionId)&&!body.data.lesson&&!body.data.lessonGroups&&!body.data.quizId)return fail(res,400,'REUSE_REQUIRES_TARGET','Өмнөх асуултыг дахин ашиглахдаа хичээл эсвэл сорилтой холбоно уу.');
+    const categoryIds=[...new Set(body.data.questions.filter(question=>!question.reuseQuestionId).map(question=>question.categoryId))];
     const categories=await db.select({id:s.categories.id}).from(s.categories).where(and(inArray(s.categories.id,categoryIds),eq(s.categories.isActive,true)));
     if(categories.length!==categoryIds.length)return fail(res,400,'VALIDATION','Импортын мөрүүдэд байхгүй эсвэл идэвхгүй ангилал байна.');
     const existing=await db.select({id:s.questions.id,questionText:s.questions.questionText,sourceDocument:s.questions.sourceDocument,sourceReference:s.questions.sourceReference}).from(s.questions);
-    const dupRows:{row:number;questionId:string;questionText:string}[]=[];
-    body.data.questions.forEach((question,index)=>{const sourceMatch=question.sourceReference?existing.find(item=>item.sourceReference===question.sourceReference&&item.sourceDocument===question.sourceDocument):undefined;if(sourceMatch)dupRows.push({row:index+2,questionId:sourceMatch.id,questionText:sourceMatch.questionText});const match=existing.map(item=>({...item,similarity:questionSimilarity(item.questionText,question.questionText)})).find(item=>item.similarity>=0.82);if(match&&!sourceMatch)dupRows.push({row:index+2,questionId:match.id,questionText:match.questionText});for(let prior=0;prior<index;prior++){const previous=body.data.questions[prior];if(question.sourceReference&&question.sourceReference===previous.sourceReference&&question.sourceDocument===previous.sourceDocument)dupRows.push({row:index+2,questionId:`file-id-${prior+2}`,questionText:previous.questionText});else if(questionSimilarity(previous.questionText,question.questionText)>=0.82)dupRows.push({row:index+2,questionId:`file-row-${prior+2}`,questionText:previous.questionText});}});
+    const dupRows:{row:number;questionId:string;questionText:string;message?:string}[]=[];
+    for(const[index,question]of body.data.questions.entries()){
+      const sourceMatch=question.sourceReference?existing.find(item=>item.sourceReference===question.sourceReference&&item.sourceDocument===question.sourceDocument):undefined;
+      const match=sourceMatch??existing.map(item=>({...item,similarity:questionSimilarity(item.questionText,question.questionText)})).find(item=>item.similarity>=0.82);
+      if(question.reuseQuestionId){
+        if(!match||question.reuseQuestionId!==match.id)dupRows.push({row:index+2,questionId:question.reuseQuestionId,questionText:question.questionText,message:'Сонгосон өмнөх асуулт олдсонгүй эсвэл энэ мөртэй таарахгүй байна.'});
+        else {const candidate=await loadImportReuseCandidate(db,match.id);const reuse=candidate&&importReuseCheck(question,candidate);if(!reuse?.canReuse)dupRows.push({row:index+2,questionId:match.id,questionText:match.questionText,message:reuse?.reason||'Өмнөх асуултыг дахин ашиглах боломжгүй.'});}
+      }
+    }
     if(dupRows.length)return res.status(409).json({error:{code:'POSSIBLE_DUPLICATE',message:'Импортын зарим мөр өмнөх асуулттай төстэй байна. Эдгээрийг preview-гээс хасна уу.'},rows:dupRows});
     const result=await db.transaction(async tx=>{
       let linkStartOrder=0,linkPoints=100;
@@ -161,16 +191,23 @@ adminContentRouter.post('/questions/import',requireAuth,requireRoles('admin','tr
         const links=await tx.select({questionOrder:s.quizQuestions.questionOrder,points:s.quizQuestions.points}).from(s.quizQuestions).where(eq(s.quizQuestions.quizId,quiz.id)).orderBy(asc(s.quizQuestions.questionOrder));
         linkStartOrder=(links.at(-1)?.questionOrder??-1)+1;linkPoints=links[0]?.points??100;
       }
+      const reuseCandidates=new Map<string,Awaited<ReturnType<typeof loadImportReuseCandidate>>>();
+      for(const[index,row]of body.data.questions.entries())if(row.reuseQuestionId){const candidate=await loadImportReuseCandidate(tx,row.reuseQuestionId,true);if(!candidate||!importReuseCheck(row,candidate).canReuse)return{kind:'reuse_changed',row:index+2,questionId:row.reuseQuestionId} as const;reuseCandidates.set(row.reuseQuestionId,candidate);}
       const[claim]=await tx.insert(s.questionImports).values({fingerprint:body.data.fingerprint,createdBy:req.user!.id,rowCount:body.data.questions.length}).onConflictDoNothing({target:s.questionImports.fingerprint}).returning({id:s.questionImports.id});
       if(!claim)return{kind:'already_imported'} as const;
-      const created:string[]=[];
-      for(const[index,row]of body.data.questions.entries()){const[question]=await tx.insert(s.questions).values({categoryId:row.categoryId,questionText:row.questionText,questionType:row.questionType,difficulty:row.difficulty,explanation:row.explanation,xp:row.xp,sourceReference:row.sourceReference??null,status:body.data.quizId?'pending_review':'draft',createdBy:req.user!.id,sourceDocument:row.sourceDocument,sourceRevision:row.sourceRevision??null,sourceSection:row.sourceSection??null,sourceLocation:row.sourceLocation}).returning();const options=await tx.insert(s.questionOptions).values(row.options.map((option,optionOrder)=>({questionId:question.id,optionText:option.text,optionOrder}))).returning({id:s.questionOptions.id});await tx.insert(s.questionCorrectOptions).values(row.correctIndexes.map(optionIndex=>({questionId:question.id,optionId:options[optionIndex].id})));await tx.insert(s.questionRevisions).values({questionId:question.id,revisionNumber:1,previousData:{questionText:question.questionText,options:row.options,sourceDocument:question.sourceDocument,sourceRevision:question.sourceRevision,sourceSection:question.sourceSection,sourceLocation:question.sourceLocation,sourceReference:question.sourceReference,xp:question.xp},changedBy:req.user!.id,changeReason:'CSV/XLSX batch import'});if(body.data.quizId)await tx.insert(s.quizQuestions).values({quizId:body.data.quizId,questionId:question.id,questionOrder:linkStartOrder+index,points:linkPoints});await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'question.imported',entityType:'question',entityId:question.id,metadata:{importId:claim.id,quizId:body.data.quizId??null,initialStatus:body.data.quizId?'pending_review':'draft'}});created.push(question.id);}
+      const created:string[]=[],resolved:string[]=[],reused:string[]=[];
+      for(const[index,row]of body.data.questions.entries()){
+        if(row.reuseQuestionId){const candidate=reuseCandidates.get(row.reuseQuestionId)!;const reuse=importReuseCheck(row,candidate!);resolved.push(row.reuseQuestionId);reused.push(row.reuseQuestionId);if(body.data.quizId)await tx.insert(s.quizQuestions).values({quizId:body.data.quizId,questionId:row.reuseQuestionId,questionOrder:linkStartOrder+index,points:linkPoints}).onConflictDoNothing();await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'question.reused_in_import',entityType:'question',entityId:row.reuseQuestionId,metadata:{importId:claim.id,quizId:body.data.quizId??null,sourceFormat:body.data.sourceFormat??null,metadataDiffers:reuse.metadataDiffers,existingCategoryId:candidate!.categoryId,requestedCategoryId:row.categoryId}});continue;}
+        const duplicateReference=row.sourceReference?await tx.select({id:s.questions.id}).from(s.questions).where(and(eq(s.questions.sourceDocument,row.sourceDocument),eq(s.questions.sourceReference,row.sourceReference))).limit(1):[];
+        const storedSourceReference=duplicateReference.length?null:row.sourceReference??null;
+        const[question]=await tx.insert(s.questions).values({categoryId:row.categoryId,questionText:row.questionText,questionType:row.questionType,difficulty:row.difficulty,explanation:row.explanation,xp:row.xp,sourceReference:storedSourceReference,status:body.data.quizId?'pending_review':'draft',createdBy:req.user!.id,sourceDocument:row.sourceDocument,sourceRevision:row.sourceRevision??null,sourceSection:row.sourceSection??null,sourceLocation:row.sourceLocation}).returning();const options=await tx.insert(s.questionOptions).values(row.options.map((option,optionOrder)=>({questionId:question.id,optionText:option.text,optionOrder}))).returning({id:s.questionOptions.id});await tx.insert(s.questionCorrectOptions).values(row.correctIndexes.map(optionIndex=>({questionId:question.id,optionId:options[optionIndex].id})));await tx.insert(s.questionRevisions).values({questionId:question.id,revisionNumber:1,previousData:{questionText:question.questionText,options:row.options,sourceDocument:question.sourceDocument,sourceRevision:question.sourceRevision,sourceSection:question.sourceSection,sourceLocation:question.sourceLocation,sourceReference:question.sourceReference,importedSourceReference:row.sourceReference??null,xp:question.xp},changedBy:req.user!.id,changeReason:'CSV/XLSX batch import'});if(body.data.quizId)await tx.insert(s.quizQuestions).values({quizId:body.data.quizId,questionId:question.id,questionOrder:linkStartOrder+index,points:linkPoints});await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'question.imported',entityType:'question',entityId:question.id,metadata:{importId:claim.id,quizId:body.data.quizId??null,initialStatus:body.data.quizId?'pending_review':'draft',sourceReference:row.sourceReference??null,sourceReferenceStored:!!storedSourceReference}});created.push(question.id);resolved.push(question.id);
+      }
       let lessonId:string|null=null;
       if(body.data.lesson&&target){
         const [last]=await tx.select({maxOrder:sql<number>`coalesce(max(lesson_order),-1)::int`}).from(s.lessons).where(eq(s.lessons.chapterId,target.id));
         const [lesson]=await tx.insert(s.lessons).values({title:body.data.lesson.title,chapterId:target.id,categoryId:body.data.questions[0].categoryId,description:'',content:'',status:'draft',lessonOrder:last.maxOrder+1,estimatedMinutes:Math.max(5,Math.ceil(created.length*.75)),passPercentage:target.passPercentage,completionXp:target.completionXp,passXp:target.passXp,perfectXp:target.perfectXp,createdBy:req.user!.id}).returning({id:s.lessons.id});
-        lessonId=lesson.id;await tx.insert(s.lessonQuestions).values(created.map((questionId,questionOrder)=>({lessonId:lesson.id,questionId,questionOrder})));
-        await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'lesson.created',entityType:'lesson',entityId:lesson.id,metadata:{importId:claim.id,questionCount:created.length,chapterId:target.id,status:'draft'}});
+        lessonId=lesson.id;await tx.insert(s.lessonQuestions).values(resolved.map((questionId,questionOrder)=>({lessonId:lesson.id,questionId,questionOrder})));
+        await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'lesson.created',entityType:'lesson',entityId:lesson.id,metadata:{importId:claim.id,questionCount:resolved.length,chapterId:target.id,status:'draft'}});
       }
       const createdLessons:{id:string;title:string;chapterTitle:string;questionCount:number}[]=[];
       if(plan&&planCourse){
@@ -180,45 +217,47 @@ adminContentRouter.post('/questions/import',requireAuth,requireRoles('admin','tr
           if(!chapter){[chapter]=await tx.insert(s.chapters).values({courseId:planCourse.id,title:group.chapterTitle,status:'draft',chapterOrder:chapterOrder++}).returning();planChapters.push(chapter);await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'chapter.created',entityType:'chapter',entityId:chapter.id,metadata:{importId:claim.id,status:'draft'}});}
           const [last]=await tx.select({maxOrder:sql<number>`coalesce(max(lesson_order),-1)::int`}).from(s.lessons).where(eq(s.lessons.chapterId,chapter.id));
           const [row]=await tx.insert(s.lessons).values({title:group.lessonTitle,chapterId:chapter.id,categoryId:body.data.questions[group.questionIndexes[0]].categoryId,description:'',content:'',status:'draft',lessonOrder:last.maxOrder+1,estimatedMinutes:Math.max(5,Math.ceil(group.questionIndexes.length*.75)),passPercentage:planCourse.defaultLessonPassPercentage,completionXp:planCourse.lessonCompletionXp,passXp:planCourse.lessonPassXp,perfectXp:planCourse.perfectPracticeXp,createdBy:req.user!.id}).returning({id:s.lessons.id});
-          await tx.insert(s.lessonQuestions).values(group.questionIndexes.map((index,questionOrder)=>({lessonId:row.id,questionId:created[index],questionOrder})));
+          await tx.insert(s.lessonQuestions).values(group.questionIndexes.map((index,questionOrder)=>({lessonId:row.id,questionId:resolved[index],questionOrder})));
           await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'lesson.created',entityType:'lesson',entityId:row.id,metadata:{importId:claim.id,status:'draft',questionCount:group.questionIndexes.length}});
           createdLessons.push({id:row.id,title:group.lessonTitle,chapterTitle:chapter.title,questionCount:group.questionIndexes.length});
         }
       }
-      return{kind:'created',created,quizId:body.data.quizId??null,lessonId,createdLessons} as const;
+      return{kind:'created',created,resolved,reused,quizId:body.data.quizId??null,lessonId,createdLessons} as const;
     });
     if(result.kind==='placement_unavailable')return fail(res,409,'PLACEMENT_UNAVAILABLE','Хөтөлбөр эсвэл бүлэг архивлагдсан, олдохгүй эсвэл нэр давхардсан байна.');
     if(result.kind==='chapter_unavailable')return fail(res,409,'CHAPTER_UNAVAILABLE','Сонгосон бүлэг олдсонгүй эсвэл архивлагдсан байна.');
     if(result.kind==='quiz_unavailable')return fail(res,409,'QUIZ_UNAVAILABLE','Асуулт холбох сорил нийтлэгдсэн эсэхийг шалгана уу.');
     if(result.kind==='already_imported')return fail(res,409,'FILE_ALREADY_IMPORTED','Энэ файлын мөрүүдийг өмнө нь импортолсон байна.');
-    res.status(201).json({status:result.quizId?'pending_review':'draft',quizId:result.quizId,count:result.created.length,questionIds:result.created,lessonId:result.lessonId,createdLessons:result.createdLessons});
+    if(result.kind==='reuse_changed')return res.status(409).json({error:{code:'REUSE_VALIDATION_FAILED',message:'Импортын өмнөх асуултын шалгалт өөрчлөгдсөн байна. Preview-г дахин ажиллуулна уу.'},rows:[{row:result.row,questionId:result.questionId,questionText:'',message:'Асуулт өөрчлөгдсөн эсвэл дахин ашиглах боломжгүй болсон.'}]});
+    res.status(201).json({status:result.quizId?'pending_review':'draft',quizId:result.quizId,count:result.resolved.length,createdCount:result.created.length,reusedCount:result.reused.length,questionIds:result.resolved,createdQuestionIds:result.created,reusedQuestionIds:result.reused,lessonId:result.lessonId,createdLessons:result.createdLessons});
   }catch(e){next(e)}
 });
 
 adminContentRouter.post('/questions/import/preview',requireAuth,requireRoles('admin','training_manager'),async(req,res,next)=>{
   try{
-    const body=z.object({sourceFormat:z.enum(['xlsx','csv']).optional(),questions:z.array(questionInput).min(1).max(200)}).safeParse(req.body);
+    const body=z.object({sourceFormat:z.enum(['xlsx','csv']).optional(),questions:z.array(importQuestionInput).min(1).max(200)}).safeParse(req.body);
     if(!body.success)return fail(res,400,'VALIDATION','Preview-ийн асуултын мэдээллийг шалгана уу.');
-    const rows:{row:number;questionId?:string;questionText:string;message:string}[]=[];
+    const rows:{row:number;questionId?:string;questionText:string;message:string;canReuse?:boolean;reuseSelected?:boolean;metadataDiffers?:boolean;sourceDocument?:string;sourceLocation?:string;status?:string;blocking?:boolean}[]=[];
     const inputs=body.data.questions;
     for(const [index,question] of inputs.entries()){
       const validation=validateQuestionDraft(question);
-      if(validation)rows.push({row:index+2,questionText:question.questionText,message:validation});
-      if(question.correctAnswerText){const answer=question.options[question.correctIndexes[0]]?.text??'';const normalizeAnswer=(value:string)=>normalizeQuestionText(value).replace(/[\p{P}\p{S}\s]/gu,'');if(normalizeAnswer(question.correctAnswerText)!==normalizeAnswer(answer))rows.push({row:index+2,questionText:question.questionText,message:'Зөв хариултын тэмдэглэгээ болон текст таарахгүй байна.'});}
-      if(body.data.sourceFormat==='xlsx'&&(question.options.length!==4||question.questionType!=='single_choice'||question.correctIndexes.length!==1))rows.push({row:index+2,questionText:question.questionText,message:'Excel асуулт дөрвөн сонголттой, A/B/C/D-ээс нэг зөв хариулттай байна.'});
+      if(validation)rows.push({row:index+2,questionText:question.questionText,message:validation,blocking:true});
+      if(question.correctAnswerText){const answer=question.options[question.correctIndexes[0]]?.text??'';const normalizeAnswer=(value:string)=>normalizeQuestionText(value).replace(/[\p{P}\p{S}\s]/gu,'');if(normalizeAnswer(question.correctAnswerText)!==normalizeAnswer(answer))rows.push({row:index+2,questionText:question.questionText,message:'Зөв хариултын тэмдэглэгээ болон текст таарахгүй байна.',blocking:true});}
+      if(body.data.sourceFormat==='xlsx'&&(question.options.length!==4||question.questionType!=='single_choice'||question.correctIndexes.length!==1))rows.push({row:index+2,questionText:question.questionText,message:'Excel асуулт дөрвөн сонголттой, A/B/C/D-ээс нэг зөв хариулттай байна.',blocking:true});
 
     }
     const existing=await db.select({id:s.questions.id,questionText:s.questions.questionText,sourceDocument:s.questions.sourceDocument,sourceReference:s.questions.sourceReference}).from(s.questions);
     for(const[index,question]of inputs.entries()){
       const sourceMatch=question.sourceReference?existing.find(item=>item.sourceReference===question.sourceReference&&item.sourceDocument===question.sourceDocument):undefined;
       const match=sourceMatch??existing.find(item=>questionSimilarity(item.questionText,question.questionText)>=0.82);
-      if(match)rows.push({row:index+2,questionId:match.id,questionText:match.questionText,message:'Өмнө үүссэн ижил эсвэл ойролцоо асуулт байна.'});
-      for(let prior=0;prior<index;prior++){
-        const earlier=inputs[prior];
-        if((question.sourceReference&&question.sourceReference===earlier.sourceReference&&question.sourceDocument===earlier.sourceDocument)||questionSimilarity(earlier.questionText,question.questionText)>=0.82){rows.push({row:index+2,questionText:earlier.questionText,message:`Энэ файл дахь ${prior+2}-р мөртэй ижил эсвэл ойролцоо.`});break;}
-      }
+      if(match){
+        const candidate=await loadImportReuseCandidate(db,match.id),reuse=candidate&&importReuseCheck(question,candidate);
+        if(question.reuseQuestionId===match.id&&reuse?.canReuse)rows.push({row:index+2,questionId:match.id,questionText:match.questionText,message:reuse.metadataDiffers?'Өмнөх асуултыг холбож болно. Одоо байгаа ангилал, эх сурвалж өөрчлөгдөхгүй.':'Яг ижил өмнөх асуултыг холбож болно.',canReuse:true,reuseSelected:true,metadataDiffers:reuse.metadataDiffers,sourceDocument:candidate?.sourceDocument??'',sourceLocation:candidate?.sourceLocation??'',status:candidate?.status??''});
+        else {const reuseRequested=!!question.reuseQuestionId;rows.push({row:index+2,questionId:match.id,questionText:match.questionText,message:reuse?.canReuse?'Ижил асуулт байна. Та өмнөхийг ашиглах эсвэл шинэ давхардсан асуулт болгон импортлох боломжтой.':`${reuse?.reason||'Төстэй асуулт байна.'} Гэсэн ч шинэ бичлэг болгон импортолж болно.`,canReuse:!!reuse?.canReuse,reuseSelected:false,metadataDiffers:!!reuse?.metadataDiffers,sourceDocument:candidate?.sourceDocument??'',sourceLocation:candidate?.sourceLocation??'',status:candidate?.status??'',blocking:reuseRequested});}
+      } else if(question.reuseQuestionId)rows.push({row:index+2,questionId:question.reuseQuestionId,questionText:question.questionText,message:'Сонгосон өмнөх асуулт олдсонгүй эсвэл мөртэй таарахгүй байна.',blocking:true});
     }
-    res.json({count:inputs.length,readyCount:inputs.length-new Set(rows.map(row=>row.row)).size,invalidCount:new Set(rows.map(row=>row.row)).size,rows});
+    const blocked=new Set(rows.filter(row=>row.blocking).map(row=>row.row));
+    res.json({count:inputs.length,readyCount:inputs.length-blocked.size,invalidCount:blocked.size,rows});
   }catch(e){next(e)}
 });
 

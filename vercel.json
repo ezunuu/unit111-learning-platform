@@ -1,0 +1,6 @@
+{
+  "installCommand": "corepack enable && corepack pnpm install --frozen-lockfile",
+  "buildCommand": "corepack pnpm --filter @unit111/web build",
+  "outputDirectory": "apps/web/dist",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}

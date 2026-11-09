@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: unit111-aviation-quiz-api
+    runtime: node
+    buildCommand: corepack enable && corepack pnpm install --frozen-lockfile && corepack pnpm --filter @unit111/api build
+    startCommand: corepack pnpm --filter @unit111/api start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.0
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: APP_ORIGIN
+        sync: false

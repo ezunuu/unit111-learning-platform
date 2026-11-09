@@ -10,6 +10,8 @@
 [data-appearance=dark] .content .eyebrow{color:#8ecae6}
 [data-appearance=dark] :is(.learn-card,.learn-stat-card,.panel,.cards article,.path-overview,.learn-empty,.profile-card,.quiz-state,.quiz-question-card,.lesson-question-card,.review-queue-card,.course-builder-card,.chapter-path-section,.learning-path-card,.admin-record,.composer-preview,.lesson-preview-dialog,.purge-dialog){background:#142330;border-color:#2b4253;box-shadow:0 6px 20px rgba(0,0,0,.1)}
 [data-appearance=dark] .subject-choice{background:#142330;border-color:#2b4253;color:#e3eef5}
+[data-appearance=dark] .subject-subcategories{background:#101c26;border-color:#2b4253;box-shadow:inset 0 1px 0 #263c4c}
+[data-appearance=dark] .subject-subcategories .learn-section-title h3{color:#e3eef5}
 [data-appearance=dark] .subject-choice[aria-pressed=true]{background:#153746;border-color:#219ebc;box-shadow:0 3px 0 #219ebc}
 [data-appearance=dark] .subject-choice[aria-pressed=true] b,[data-appearance=dark] .subject-check{color:#b9e7f8}
 [data-appearance=dark] .subject-choice small{color:#a5bac9}
@@ -70,3 +72,30 @@
 [data-appearance=dark] .streak-celebration-flame .stat-emblem{background:transparent;box-shadow:none}
 [data-appearance=dark] :is(.learning-path-node,.path-node-icon,.profile-achievement>span,.learn-achievement>span:first-child){background:#203a4b;border-color:#344e61;color:#d8edf8}
 [data-appearance=dark] .learning-path-row.completed .learning-path-node{background:#164332;border-color:#397b5c}
+
+/* Dark surfaces for content authoring, question bank and admin controls. */
+[data-appearance=dark] .content :is(.question-import,.admin-editor,.duplicate-group,.lesson-review-source,.question-purge-items article,.review-question,.duplicate-items article){background:#142330;border-color:#2b4253;color:#dceaf4}
+[data-appearance=dark] .content :is(.admin-management-head>a,.admin-tabs button,.admin-actions button:not(.primary):not(.learn-button-primary),.adminrow button,.period button){background:#203647;border-color:#3a566c;color:#dceaf4}
+[data-appearance=dark] .content :is(.admin-tabs button.selected,.admin-actions button.primary){background:#219ebc;border-color:#219ebc;color:#071b26}
+[data-appearance=dark] .content .admin-actions button.danger{background:#482a2a;border-color:#8f504a;color:#ffd6ce}
+[data-appearance=dark] .content .adminrow button{background:#173b32;border-color:#326953;color:#bcebd1}
+[data-appearance=dark] .content :is(.question-import,.admin-toolbar,.admin-management-head,.admin-editor,.duplicate-group,.review-question,.admin-inline-fields,.adminform){color:#dceaf4}
+[data-appearance=dark] .content :is(.admin-toolbar label,.admin-actions label,.admin-inline-fields label,.adminform label,.review-question>label){color:#c5d8e5}
+[data-appearance=dark] .content :is(.admin-toolbar h2,.panel>h2,.admin-management-head h1,.admin-editor h3,.duplicate-group h3,.review-question h3){color:#e3eef5}
+[data-appearance=dark] .content :is(.admin-record p,.admin-record small,.muted,.duplicate-items small,.review-question ol,.lesson-review-source dt){color:#a9bdcb}
+[data-appearance=dark] .content .review-question ol strong{color:#7fe0b1}
+[data-appearance=dark] .content :is(.admin-toolbar input,.admin-toolbar select,.admin-actions select,.admin-inline-fields input,.admin-inline-fields select,.adminform input,.adminform select,.adminform textarea,.review-question textarea,.import-category-create input){background:#101e29;border-color:#3b5468;color:#e5eef6}
+[data-appearance=dark] .content .import-table-wrap{background:#101c26;border-color:#304858}
+[data-appearance=dark] .content .import-table th{background:#1b3040;border-color:#334d60;color:#d5e8f5}
+[data-appearance=dark] .content .import-table td{border-color:#304858;color:#dceaf4}
+[data-appearance=dark] .content .import-table tr.invalid{background:#402920}
+[data-appearance=dark] .content .import-table tr.invalid td:last-child{color:#ffb4a4}
+[data-appearance=dark] .content .question-purge-items article.purge-item-eligible{background:#15372f;border-color:#34745a}
+[data-appearance=dark] .content .question-purge-items article.purge-item-blocked{background:#402a29;border-color:#81504a}
+[data-appearance=dark] .content .purge-attest{background:#382f18;border-color:#6c5826;color:#f1d991}
+[data-appearance=dark] .content .lesson-review-source dl div{background:#1b3040}
+[data-appearance=dark] .content .lesson-review-source dd{color:#dceaf4}
+[data-appearance=dark] .content .success{background:#15372f;color:#bcebd1}
+[data-appearance=dark] .content :is(.import-category-create small,.import-lesson-setup p,.import-lesson-setup small,.import-file){color:#a9bdcb}
+[data-appearance=dark] .content .admin-record{background:#142330}
+[data-appearance=dark] .content button:focus-visible,[data-appearance=dark] .content a:focus-visible{outline-color:#43bad5}

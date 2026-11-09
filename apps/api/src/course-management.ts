@@ -8,8 +8,9 @@ import { requireAuth, requireRoles } from './auth.js';
 export const courseManagementRouter = Router();
 const fail = (res: import('express').Response, status: number, code: string, message: string) => res.status(status).json({ error: { code, message } });
 const statusSchema = z.enum(['draft', 'published', 'archived']);
+async function isActiveLeafSubject(id:string){const [subject]=await db.select({id:s.learningSubjects.id}).from(s.learningSubjects).where(and(eq(s.learningSubjects.id,id),eq(s.learningSubjects.isActive,true)));if(!subject)return false;const [child]=await db.select({id:s.learningSubjects.id}).from(s.learningSubjects).where(and(eq(s.learningSubjects.parentId,id),eq(s.learningSubjects.isActive,true))).limit(1);return !child;}
 const courseInput = z.object({
-  subjectId:z.string().uuid().optional(), title: z.string().trim().min(1).max(200), description: z.string().trim().max(4000).default(''), status: statusSchema.default('draft'), courseOrder: z.number().int().min(0).max(10000).default(0),
+  subjectId:z.string().uuid(), title: z.string().trim().min(1).max(200), description: z.string().trim().max(4000).default(''), status: statusSchema.default('draft'), courseOrder: z.number().int().min(0).max(10000).default(0),
   freeLearningMode: z.boolean().default(false), defaultLessonPassPercentage: z.number().int().min(0).max(100).default(80), chapterQuizPassPercentage: z.number().int().min(0).max(100).default(70),
   lessonCompletionXp: z.number().int().min(0).max(10000).default(10), lessonPassXp: z.number().int().min(0).max(10000).default(15), perfectPracticeXp: z.number().int().min(0).max(10000).default(10), chapterQuizXp: z.number().int().min(0).max(10000).default(30),
 });
@@ -57,7 +58,7 @@ courseManagementRouter.get('/admin/course-builder/lessons', requireAuth, require
 courseManagementRouter.post('/admin/courses', requireAuth, requireRoles('admin', 'training_manager'), async (req, res, next) => {
   try {
     const p = courseInput.safeParse(req.body); if (!p.success) return fail(res, 400, 'VALIDATION', 'Сургалтын хөтөлбөрийн талбаруудыг шалгана уу.');
-    if(p.data.subjectId){const [subject]=await db.select({id:s.learningSubjects.id}).from(s.learningSubjects).where(and(eq(s.learningSubjects.id,p.data.subjectId),eq(s.learningSubjects.isActive,true)));if(!subject)return fail(res,400,'VALIDATION','Сургалтын чиглэл олдсонгүй.');}
+    if(p.data.subjectId&&!await isActiveLeafSubject(p.data.subjectId))return fail(res,400,'VALIDATION','Хөтөлбөрт идэвхтэй дэд ангилал сонгоно уу.');
     const [course] = await db.transaction(async (tx) => {
       const [created] = await tx.insert(s.courses).values({ ...p.data, createdBy: req.user!.id }).returning();
       await tx.insert(s.auditLogs).values({ actorUserId: req.user!.id, action: 'course.created', entityType: 'course', entityId: created.id, metadata: { status: created.status } });
@@ -70,7 +71,7 @@ courseManagementRouter.post('/admin/courses', requireAuth, requireRoles('admin',
 courseManagementRouter.put('/admin/courses/:id', requireAuth, requireRoles('admin', 'training_manager'), async (req, res, next) => {
   try {
     const p = courseInput.safeParse(req.body); if (!p.success) return fail(res, 400, 'VALIDATION', 'Сургалтын хөтөлбөрийн талбаруудыг шалгана уу.');
-    if(p.data.subjectId){const [subject]=await db.select({id:s.learningSubjects.id}).from(s.learningSubjects).where(and(eq(s.learningSubjects.id,p.data.subjectId),eq(s.learningSubjects.isActive,true)));if(!subject)return fail(res,400,'VALIDATION','Сургалтын чиглэл олдсонгүй.');}
+    if(p.data.subjectId&&!await isActiveLeafSubject(p.data.subjectId))return fail(res,400,'VALIDATION','Хөтөлбөрт идэвхтэй дэд ангилал сонгоно уу.');
     const id = String(req.params.id);
     const updated = await db.transaction(async (tx) => {
       const [existing] = await tx.select({ id: s.courses.id }).from(s.courses).where(eq(s.courses.id, id)).for('update').limit(1);
