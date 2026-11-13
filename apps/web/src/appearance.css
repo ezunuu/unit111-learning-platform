@@ -23,7 +23,7 @@
 [data-appearance=dark] .learn-button-primary,[data-appearance=dark] button.primary{background:#219ebc;border-color:#219ebc;color:#071b26}
 [data-appearance=dark] .learn-button-primary:hover,[data-appearance=dark] button.primary:hover{background:#8ecae6;border-color:#8ecae6}
 [data-appearance=dark] .learn-button-outline{background:#192e3d;border-color:#426274;color:#d8edf8}
-[data-appearance=dark] :is(.learn-text-link,.streak-demo-button){color:#8ecae6}
+[data-appearance=dark] .learn-text-link{color:#8ecae6}
 [data-appearance=dark] :is(.learn-achievement,.profile-achievement,.course-lesson-list li,.quiz-option,.lesson-option,.path-node,.import-lesson-setup,.preview-publication,.course-builder-create,.course-content-block-list article,.lesson-content-card,.course-status,.quiz-back,.lesson-player-back){background:#192c3a;border-color:#344e61;color:#dfecf5}
 [data-appearance=dark] :is(.learn-achievement.earned,.profile-achievement.unlocked){background:#16362f;border-color:#2b6150}
 [data-appearance=dark] .course-path-card{background:linear-gradient(160deg,#142330,#10202b);border-color:#2b4253}
