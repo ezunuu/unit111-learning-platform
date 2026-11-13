@@ -40,7 +40,7 @@ courseManagementRouter.get('/admin/courses', requireAuth, requireRoles('admin', 
   try {
     const courses = await db.select().from(s.courses).orderBy(asc(s.courses.courseOrder), asc(s.courses.title));
     const chapters = courses.length ? await db.select().from(s.chapters).where(inArray(s.chapters.courseId, courses.map((course) => course.id))).orderBy(asc(s.chapters.chapterOrder)) : [];
-    const lessons = chapters.length ? await db.select({ id: s.lessons.id, title: s.lessons.title, description: s.lessons.description, chapterId: s.lessons.chapterId, status: s.lessons.status, theoryRequired: s.lessons.theoryRequired, lessonOrder: s.lessons.lessonOrder, passPercentage: s.lessons.passPercentage, estimatedMinutes: s.lessons.estimatedMinutes }).from(s.lessons).where(inArray(s.lessons.chapterId, chapters.map((chapter) => chapter.id))).orderBy(asc(s.lessons.lessonOrder)) : [];
+    const lessons = chapters.length ? await db.select({ id: s.lessons.id, title: s.lessons.title, description: s.lessons.description, chapterId: s.lessons.chapterId, status: s.lessons.status, theoryRequired: s.lessons.theoryRequired, lessonOrder: s.lessons.lessonOrder, passPercentage: s.lessons.passPercentage, estimatedMinutes: s.lessons.estimatedMinutes }).from(s.lessons).where(inArray(s.lessons.chapterId, chapters.map((chapter) => chapter.id))).orderBy(asc(s.lessons.lessonOrder), asc(s.lessons.createdAt), asc(s.lessons.id)) : [];
     const quizRows = chapters.length ? await db.select({ id: s.quizzes.id, title: s.quizzes.title, chapterId: s.quizzes.chapterId, status: s.quizzes.status, questionCount: s.quizzes.questionCount, passingPercentage: s.quizzes.passingPercentage }).from(s.quizzes).where(inArray(s.quizzes.chapterId, chapters.map((chapter) => chapter.id))) : [];
     res.json({ items: courses.map((course) => ({ ...course, chapters: chapters.filter((chapter) => chapter.courseId === course.id).map((chapter) => ({ ...chapter, lessons: lessons.filter((lesson) => lesson.chapterId === chapter.id), finalQuiz: quizRows.find((quiz) => quiz.chapterId === chapter.id) ?? null })) })) });
   } catch (error) { next(error); }
@@ -163,11 +163,18 @@ courseManagementRouter.post('/admin/lessons/:id/move', requireAuth, requireRoles
     const id = String(req.params.id);
     const result = await db.transaction(async (tx) => {
       const [current] = await tx.select().from(s.lessons).where(eq(s.lessons.id, id)).for('update').limit(1); if (!current) return null;
-      const siblings = await tx.select().from(s.lessons).where(current.chapterId ? eq(s.lessons.chapterId, current.chapterId) : and(isNull(s.lessons.chapterId), eq(s.lessons.categoryId, current.categoryId))).orderBy(asc(s.lessons.lessonOrder), asc(s.lessons.title));
-      const index = siblings.findIndex((lesson) => lesson.id === id), target = siblings[index + (parsed.data.direction === 'up' ? -1 : 1)]; if (!target) return current;
-      await tx.update(s.lessons).set({ lessonOrder: target.lessonOrder, updatedAt: new Date() }).where(eq(s.lessons.id, current.id));
-      const [updated] = await tx.update(s.lessons).set({ lessonOrder: current.lessonOrder, updatedAt: new Date() }).where(eq(s.lessons.id, target.id)).returning();
-      await tx.insert(s.auditLogs).values({ actorUserId: req.user!.id, action: 'lesson.reordered', entityType: 'lesson', entityId: id, metadata: { direction: parsed.data.direction, swappedWith: target.id } });
+      // Lock all siblings and use the same stable order as the learner path. Duplicate lesson_order
+      // values are common in imported lessons, so swapping the two numeric values alone can be a no-op.
+      const siblings = await tx.select().from(s.lessons).where(current.chapterId ? eq(s.lessons.chapterId, current.chapterId) : and(isNull(s.lessons.chapterId), eq(s.lessons.categoryId, current.categoryId))).orderBy(asc(s.lessons.lessonOrder), asc(s.lessons.createdAt), asc(s.lessons.id)).for('update');
+      const index = siblings.findIndex((lesson) => lesson.id === id), targetIndex = index + (parsed.data.direction === 'up' ? -1 : 1), target = siblings[targetIndex]; if (!target) return current;
+      const reordered = [...siblings];
+      [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
+      const now = new Date();
+      for (const [lessonOrder, lesson] of reordered.entries()) {
+        await tx.update(s.lessons).set({ lessonOrder, updatedAt: now }).where(eq(s.lessons.id, lesson.id));
+      }
+      const [updated] = await tx.select().from(s.lessons).where(eq(s.lessons.id, id)).limit(1);
+      await tx.insert(s.auditLogs).values({ actorUserId: req.user!.id, action: 'lesson.reordered', entityType: 'lesson', entityId: id, metadata: { direction: parsed.data.direction, swappedWith: target.id, previousOrder: current.lessonOrder, lessonOrder: updated.lessonOrder, normalizedSiblingCount: reordered.length } });
       return updated;
     });
     if (!result) return fail(res, 404, 'NOT_FOUND', 'Хичээл олдсонгүй.');

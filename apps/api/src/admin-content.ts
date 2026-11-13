@@ -194,27 +194,43 @@ adminContentRouter.post('/questions/import',requireAuth,requireRoles('admin','tr
       const reuseCandidates=new Map<string,Awaited<ReturnType<typeof loadImportReuseCandidate>>>();
       for(const[index,row]of body.data.questions.entries())if(row.reuseQuestionId){const candidate=await loadImportReuseCandidate(tx,row.reuseQuestionId,true);if(!candidate||!importReuseCheck(row,candidate).canReuse)return{kind:'reuse_changed',row:index+2,questionId:row.reuseQuestionId} as const;reuseCandidates.set(row.reuseQuestionId,candidate);}
       const[claim]=await tx.insert(s.questionImports).values({fingerprint:body.data.fingerprint,createdBy:req.user!.id,rowCount:body.data.questions.length}).onConflictDoNothing({target:s.questionImports.fingerprint}).returning({id:s.questionImports.id});
-      if(!claim)return{kind:'already_imported'} as const;
+      let importId=claim?.id;
+      if(!importId){
+        const[previousImport]=await tx.select({id:s.questionImports.id}).from(s.questionImports).where(eq(s.questionImports.fingerprint,body.data.fingerprint)).for('update').limit(1);
+        if(!previousImport)return{kind:'already_imported'} as const;
+        const activeResult=await tx.execute(sql`SELECT EXISTS(
+          SELECT 1 FROM audit_logs a WHERE a.metadata->>'importId'=${previousImport.id} AND (
+            (a.entity_type='question' AND a.action IN ('question.imported','question.reused_in_import') AND EXISTS(SELECT 1 FROM questions q WHERE q.id=a.entity_id)) OR
+            (a.entity_type='lesson' AND a.action='lesson.created' AND EXISTS(SELECT 1 FROM lessons l WHERE l.id=a.entity_id)) OR
+            (a.entity_type='chapter' AND a.action='chapter.created' AND EXISTS(SELECT 1 FROM chapters c WHERE c.id=a.entity_id))
+          )
+        ) AS has_active_records`);
+        const hasActiveRecords=Boolean((activeResult as unknown as {rows:{has_active_records:boolean}[]}).rows[0]?.has_active_records);
+        if(hasActiveRecords)return{kind:'already_imported'} as const;
+        // Keep the original import claim and audit provenance. Reuse it only when
+        // every question/lesson created or reused by that batch has been removed.
+        importId=previousImport.id;
+      }
       const created:string[]=[],resolved:string[]=[],reused:string[]=[];
       for(const[index,row]of body.data.questions.entries()){
-        if(row.reuseQuestionId){const candidate=reuseCandidates.get(row.reuseQuestionId)!;const reuse=importReuseCheck(row,candidate!);resolved.push(row.reuseQuestionId);reused.push(row.reuseQuestionId);if(body.data.quizId)await tx.insert(s.quizQuestions).values({quizId:body.data.quizId,questionId:row.reuseQuestionId,questionOrder:linkStartOrder+index,points:linkPoints}).onConflictDoNothing();await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'question.reused_in_import',entityType:'question',entityId:row.reuseQuestionId,metadata:{importId:claim.id,quizId:body.data.quizId??null,sourceFormat:body.data.sourceFormat??null,metadataDiffers:reuse.metadataDiffers,existingCategoryId:candidate!.categoryId,requestedCategoryId:row.categoryId}});continue;}
+        if(row.reuseQuestionId){const candidate=reuseCandidates.get(row.reuseQuestionId)!;const reuse=importReuseCheck(row,candidate!);resolved.push(row.reuseQuestionId);reused.push(row.reuseQuestionId);if(body.data.quizId)await tx.insert(s.quizQuestions).values({quizId:body.data.quizId,questionId:row.reuseQuestionId,questionOrder:linkStartOrder+index,points:linkPoints}).onConflictDoNothing();await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'question.reused_in_import',entityType:'question',entityId:row.reuseQuestionId,metadata:{importId,quizId:body.data.quizId??null,sourceFormat:body.data.sourceFormat??null,metadataDiffers:reuse.metadataDiffers,existingCategoryId:candidate!.categoryId,requestedCategoryId:row.categoryId}});continue;}
         const duplicateReference=row.sourceReference?await tx.select({id:s.questions.id}).from(s.questions).where(and(eq(s.questions.sourceDocument,row.sourceDocument),eq(s.questions.sourceReference,row.sourceReference))).limit(1):[];
         const storedSourceReference=duplicateReference.length?null:row.sourceReference??null;
-        const[question]=await tx.insert(s.questions).values({categoryId:row.categoryId,questionText:row.questionText,questionType:row.questionType,difficulty:row.difficulty,explanation:row.explanation,xp:row.xp,sourceReference:storedSourceReference,status:body.data.quizId?'pending_review':'draft',createdBy:req.user!.id,sourceDocument:row.sourceDocument,sourceRevision:row.sourceRevision??null,sourceSection:row.sourceSection??null,sourceLocation:row.sourceLocation}).returning();const options=await tx.insert(s.questionOptions).values(row.options.map((option,optionOrder)=>({questionId:question.id,optionText:option.text,optionOrder}))).returning({id:s.questionOptions.id});await tx.insert(s.questionCorrectOptions).values(row.correctIndexes.map(optionIndex=>({questionId:question.id,optionId:options[optionIndex].id})));await tx.insert(s.questionRevisions).values({questionId:question.id,revisionNumber:1,previousData:{questionText:question.questionText,options:row.options,sourceDocument:question.sourceDocument,sourceRevision:question.sourceRevision,sourceSection:question.sourceSection,sourceLocation:question.sourceLocation,sourceReference:question.sourceReference,importedSourceReference:row.sourceReference??null,xp:question.xp},changedBy:req.user!.id,changeReason:'CSV/XLSX batch import'});if(body.data.quizId)await tx.insert(s.quizQuestions).values({quizId:body.data.quizId,questionId:question.id,questionOrder:linkStartOrder+index,points:linkPoints});await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'question.imported',entityType:'question',entityId:question.id,metadata:{importId:claim.id,quizId:body.data.quizId??null,initialStatus:body.data.quizId?'pending_review':'draft',sourceReference:row.sourceReference??null,sourceReferenceStored:!!storedSourceReference}});created.push(question.id);resolved.push(question.id);
+        const[question]=await tx.insert(s.questions).values({categoryId:row.categoryId,questionText:row.questionText,questionType:row.questionType,difficulty:row.difficulty,explanation:row.explanation,xp:row.xp,sourceReference:storedSourceReference,status:body.data.quizId?'pending_review':'draft',createdBy:req.user!.id,sourceDocument:row.sourceDocument,sourceRevision:row.sourceRevision??null,sourceSection:row.sourceSection??null,sourceLocation:row.sourceLocation}).returning();const options=await tx.insert(s.questionOptions).values(row.options.map((option,optionOrder)=>({questionId:question.id,optionText:option.text,optionOrder}))).returning({id:s.questionOptions.id});await tx.insert(s.questionCorrectOptions).values(row.correctIndexes.map(optionIndex=>({questionId:question.id,optionId:options[optionIndex].id})));await tx.insert(s.questionRevisions).values({questionId:question.id,revisionNumber:1,previousData:{questionText:question.questionText,options:row.options,sourceDocument:question.sourceDocument,sourceRevision:question.sourceRevision,sourceSection:question.sourceSection,sourceLocation:question.sourceLocation,sourceReference:question.sourceReference,importedSourceReference:row.sourceReference??null,xp:question.xp},changedBy:req.user!.id,changeReason:'CSV/XLSX batch import'});if(body.data.quizId)await tx.insert(s.quizQuestions).values({quizId:body.data.quizId,questionId:question.id,questionOrder:linkStartOrder+index,points:linkPoints});await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'question.imported',entityType:'question',entityId:question.id,metadata:{importId,quizId:body.data.quizId??null,initialStatus:body.data.quizId?'pending_review':'draft',sourceReference:row.sourceReference??null,sourceReferenceStored:!!storedSourceReference}});created.push(question.id);resolved.push(question.id);
       }
       let lessonId:string|null=null;
       if(body.data.lesson&&target){
         const [last]=await tx.select({maxOrder:sql<number>`coalesce(max(lesson_order),-1)::int`}).from(s.lessons).where(eq(s.lessons.chapterId,target.id));
         const [lesson]=await tx.insert(s.lessons).values({title:body.data.lesson.title,chapterId:target.id,categoryId:body.data.questions[0].categoryId,description:'',content:'',status:'draft',lessonOrder:last.maxOrder+1,estimatedMinutes:Math.max(5,Math.ceil(created.length*.75)),passPercentage:target.passPercentage,completionXp:target.completionXp,passXp:target.passXp,perfectXp:target.perfectXp,createdBy:req.user!.id}).returning({id:s.lessons.id});
         lessonId=lesson.id;await tx.insert(s.lessonQuestions).values(resolved.map((questionId,questionOrder)=>({lessonId:lesson.id,questionId,questionOrder})));
-        await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'lesson.created',entityType:'lesson',entityId:lesson.id,metadata:{importId:claim.id,questionCount:resolved.length,chapterId:target.id,status:'draft'}});
+        await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'lesson.created',entityType:'lesson',entityId:lesson.id,metadata:{importId,questionCount:resolved.length,chapterId:target.id,status:'draft'}});
       }
       const createdLessons:{id:string;title:string;chapterTitle:string;questionCount:number}[]=[];
       if(plan&&planCourse){
         let chapterOrder=Math.max(-1,...planChapters.map(ch=>ch.chapterOrder))+1;
         for(const group of plan.groups){
           let chapter=planChapters.find(ch=>importTitleKey(ch.title)===importTitleKey(group.chapterTitle));
-          if(!chapter){[chapter]=await tx.insert(s.chapters).values({courseId:planCourse.id,title:group.chapterTitle,status:'draft',chapterOrder:chapterOrder++}).returning();planChapters.push(chapter);await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'chapter.created',entityType:'chapter',entityId:chapter.id,metadata:{importId:claim.id,status:'draft'}});}
+          if(!chapter){[chapter]=await tx.insert(s.chapters).values({courseId:planCourse.id,title:group.chapterTitle,status:'draft',chapterOrder:chapterOrder++}).returning();planChapters.push(chapter);await tx.insert(s.auditLogs).values({actorUserId:req.user!.id,action:'chapter.created',entityType:'chapter',entityId:chapter.id,metadata:{importId,status:'draft'}});}
           const [last]=await tx.select({maxOrder:sql<number>`coalesce(max(lesson_order),-1)::int`}).from(s.lessons).where(eq(s.lessons.chapterId,chapter.id));
           const [row]=await tx.insert(s.lessons).values({title:group.lessonTitle,chapterId:chapter.id,categoryId:body.data.questions[group.questionIndexes[0]].categoryId,description:'',content:'',status:'draft',lessonOrder:last.maxOrder+1,estimatedMinutes:Math.max(5,Math.ceil(group.questionIndexes.length*.75)),passPercentage:planCourse.defaultLessonPassPercentage,completionXp:planCourse.lessonCompletionXp,passXp:planCourse.lessonPassXp,perfectXp:planCourse.perfectPracticeXp,createdBy:req.user!.id}).returning({id:s.lessons.id});
           await tx.insert(s.lessonQuestions).values(group.questionIndexes.map((index,questionOrder)=>({lessonId:row.id,questionId:resolved[index],questionOrder})));
@@ -593,12 +609,12 @@ async function getQuestionPurgePreview(executor:typeof db|Parameters<Parameters<
   const items=[];
   for(const id of ids){
     const item=await inspectQuestionPurge(executor,id);
-    items.push(item??{id,question_text:'',status:'missing',quiz_links:[],lesson_links:[],attempt_count:0,answer_count:0,snapshot_count:0,competition_count:0,revision_count:0,audit_count:0,duplicate_reference_count:0,option_count:0,correct_option_count:0,canDelete:false,reasons:['Асуулт олдсонгүй.'],quizLinksToDetach:0,unknownForeignKeyTables:[]});
+    items.push(item??{id,question_text:'',status:'missing',quiz_links:[],lesson_links:[],attempt_count:0,answer_count:0,snapshot_count:0,competition_count:0,learning_history_count:0,revision_count:0,audit_count:0,duplicate_reference_count:0,option_count:0,correct_option_count:0,canDelete:false,reasons:['Асуулт олдсонгүй.'],quizLinksToDetach:0,unknownForeignKeyTables:[]});
   }
   return items;
 }
 function publicQuestionPurgeItem(item:Awaited<ReturnType<typeof getQuestionPurgePreview>>[number]){
-  return{id:item.id,questionText:item.question_text,status:item.status,canDelete:item.canDelete,reasons:item.reasons,quizLinks:item.quiz_links,lessonLinks:item.lesson_links,attemptCount:Number(item.attempt_count),answerCount:Number(item.answer_count),snapshotCount:Number(item.snapshot_count),competitionCount:Number(item.competition_count),revisionCount:Number(item.revision_count),auditCount:Number(item.audit_count),duplicateReferenceCount:Number(item.duplicate_reference_count),ownedOptionCount:Number(item.option_count),correctOptionCount:Number(item.correct_option_count),unknownForeignKeyTables:item.unknownForeignKeyTables,quizLinksToDetach:item.quizLinksToDetach};
+  return{id:item.id,questionText:item.question_text,status:item.status,canDelete:item.canDelete,reasons:item.reasons,quizLinks:item.quiz_links,lessonLinks:item.lesson_links,attemptCount:Number(item.attempt_count),answerCount:Number(item.answer_count),snapshotCount:Number(item.snapshot_count),competitionCount:Number(item.competition_count),learningHistoryCount:Number(item.learning_history_count),revisionCount:Number(item.revision_count),auditCount:Number(item.audit_count),duplicateReferenceCount:Number(item.duplicate_reference_count),ownedOptionCount:Number(item.option_count),correctOptionCount:Number(item.correct_option_count),unknownForeignKeyTables:item.unknownForeignKeyTables,quizLinksToDetach:item.quizLinksToDetach};
 }
 adminContentRouter.post('/questions/permanent-delete/preview',requireAuth,requireRoles('admin'),async(req,res,next)=>{
   try{
@@ -641,6 +657,11 @@ async function permanentlyDeleteQuestionBatch(questionIds:string[],actorUserId:s
     let detachedQuizLinks=0,deletedOptions=0,deletedCorrectOptions=0;
     for(const item of deletable){
       const id=item.id;
+      const revisions=await tx.select().from(s.questionRevisions).where(eq(s.questionRevisions.questionId,id)).orderBy(asc(s.questionRevisions.revisionNumber));
+      for(const revision of revisions){
+        await tx.insert(s.auditLogs).values({actorUserId,action:'question.revision_preserved_before_permanent_delete',entityType:'question',entityId:id,metadata:{revisionId:revision.id,revisionNumber:revision.revisionNumber,previousData:revision.previousData,changedBy:revision.changedBy,changeReason:revision.changeReason,createdAt:revision.createdAt.toISOString()}});
+      }
+      if(revisions.length)await tx.delete(s.questionRevisions).where(eq(s.questionRevisions.questionId,id));
       const links=await tx.delete(s.quizQuestions).where(eq(s.quizQuestions.questionId,id)).returning({id:s.quizQuestions.id});
       detachedQuizLinks+=links.length;
       deletedOptions+=Number(item.option_count);
@@ -661,7 +682,7 @@ async function permanentlyDeleteQuestionBatch(questionIds:string[],actorUserId:s
 }
 adminContentRouter.post('/questions/:id/permanent-delete',requireAuth,requireRoles('admin'),async(req,res,next)=>{
   try{
-    const id=String(req.params.id),body=z.object({confirmation:z.literal('УСТГАХ')}).safeParse(req.body);
+    const id=String(req.params.id),body=z.object({confirmation:z.literal('УСТГАХ').optional()}).safeParse(req.body??{});
     if(!z.string().uuid().safeParse(id).success)return fail(res,400,'VALIDATION','Асуултын ID буруу байна.');
     if(!body.success)return fail(res,400,'CONFIRMATION_REQUIRED','Устгахын тулд “УСТГАХ” гэж баталгаажуулна уу.');
     const result=await permanentlyDeleteQuestionBatch([id],req.user!.id);
@@ -671,8 +692,8 @@ adminContentRouter.post('/questions/:id/permanent-delete',requireAuth,requireRol
 });
 adminContentRouter.post('/questions/permanent-delete',requireAuth,requireRoles('admin'),async(req,res,next)=>{
   try{
-    const parsed=z.object({questionIds:purgeQuestionIds,confirmation:z.literal('УСТГАХ')}).safeParse(req.body);
-    if(!parsed.success)return fail(res,400,'CONFIRMATION_REQUIRED','1–100 асуулт сонгож, “УСТГАХ” гэж баталгаажуулна уу.');
+    const parsed=z.object({questionIds:purgeQuestionIds,confirmation:z.literal('УСТГАХ').optional()}).safeParse(req.body);
+    if(!parsed.success)return fail(res,400,'VALIDATION','1–100 давхардаагүй асуултын ID сонгоно уу.');
     const result=await permanentlyDeleteQuestionBatch(parsed.data.questionIds,req.user!.id);
     if(result.kind==='none_eligible')return res.status(409).json({error:{code:'QUESTION_NOT_DELETABLE',message:'Сонгосон асуултуудын аль нь ч аюулгүй устгах нөхцөл хангаагүй.'},deletedCount:0,skippedCount:result.items.length,failedCount:0,items:result.items});
     res.json({status:'completed',deletedCount:result.deletedIds.length,skippedCount:result.skipped.length,failedCount:0,deletedIds:result.deletedIds,detachedQuizLinks:result.detachedQuizLinks,deletedOptions:result.deletedOptions,deletedCorrectOptions:result.deletedCorrectOptions,backup:result.backup,items:result.items});

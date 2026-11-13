@@ -2,10 +2,11 @@ import {sql,type SQL} from 'drizzle-orm';
 import {assessQuestionPurge} from './question-purge-policy.js';
 
 type SqlExecutor={execute:(query:SQL)=>Promise<unknown>};
-type QuestionRow={id:string;question_text:string;status:string;created_at:Date;updated_at:Date;quiz_links:{id:string;title:string;status:string}[];lesson_links:{id:string;title:string;status:string}[];attempt_count:number|string;answer_count:number|string;snapshot_count:number|string;competition_count:number|string;revision_count:number|string;audit_count:number|string;duplicate_reference_count:number|string;option_count:number|string;correct_option_count:number|string};
+type QuestionRow={id:string;question_text:string;status:string;created_at:Date;updated_at:Date;quiz_links:{id:string;title:string;status:string}[];lesson_links:{id:string;title:string;status:string}[];attempt_count:number|string;answer_count:number|string;snapshot_count:number|string;competition_count:number|string;learning_history_count:number|string;revision_count:number|string;audit_count:number|string;duplicate_reference_count:number|string;option_count:number|string;correct_option_count:number|string};
 export type QuestionPurgePreviewItem=QuestionRow&{canDelete:boolean;reasons:string[];quizLinksToDetach:number;unknownForeignKeyTables:string[]};
 
-const knownQuestionDependents=new Set(['quiz_questions','lesson_questions','quiz_attempt_questions','answers','question_revisions','question_options','question_correct_options','questions']);
+const knownQuestionDependents=new Set(['quiz_questions','lesson_questions','quiz_attempt_questions','answers','question_revisions','question_options','question_correct_options','questions','learning_attempt_answers','learning_attempt_questions','practice_question_review_queue','question_review_queue']);
+const quoteIdentifier=(value:string)=>`"${value.replaceAll('"','""')}"`;
 
 export async function inspectQuestionPurge(executor:SqlExecutor,questionId:string):Promise<QuestionPurgePreviewItem|null>{
   const [questionResult,foreignKeyResult]=await Promise.all([
@@ -16,13 +17,14 @@ export async function inspectQuestionPurge(executor:SqlExecutor,questionId:strin
       (SELECT count(*)::int FROM answers answer WHERE answer.question_id=q.id) AS answer_count,
       (SELECT count(*)::int FROM quiz_attempt_questions snapshot WHERE snapshot.question_id=q.id) AS snapshot_count,
       (SELECT count(DISTINCT competition.id)::int FROM quiz_questions link JOIN competitions competition ON competition.quiz_id=link.quiz_id WHERE link.question_id=q.id) AS competition_count,
+      ((SELECT count(*)::int FROM learning_attempt_questions WHERE question_id=q.id)+(SELECT count(*)::int FROM learning_attempt_answers WHERE question_id=q.id)+(SELECT count(*)::int FROM question_review_queue WHERE question_id=q.id)+(SELECT count(*)::int FROM practice_question_review_queue WHERE question_id=q.id)) AS learning_history_count,
       (SELECT count(*)::int FROM question_revisions revision WHERE revision.question_id=q.id) AS revision_count,
       (SELECT count(*)::int FROM audit_logs audit WHERE audit.entity_type='question' AND audit.entity_id=q.id) AS audit_count,
       (SELECT count(*)::int FROM questions duplicate WHERE duplicate.duplicate_of=q.id) AS duplicate_reference_count,
       (SELECT count(*)::int FROM question_options option WHERE option.question_id=q.id) AS option_count,
       (SELECT count(*)::int FROM question_correct_options correct WHERE correct.question_id=q.id) AS correct_option_count
       FROM questions q WHERE q.id=${questionId}`),
-    executor.execute(sql`SELECT DISTINCT source.relname AS table_name
+    executor.execute(sql`SELECT source_ns.nspname AS schema_name,source.relname AS table_name,source_column.attname AS column_name
       FROM pg_constraint fk
       JOIN pg_class target ON target.oid=fk.confrelid
       JOIN pg_namespace target_ns ON target_ns.oid=target.relnamespace
@@ -31,12 +33,21 @@ export async function inspectQuestionPurge(executor:SqlExecutor,questionId:strin
       JOIN LATERAL unnest(fk.conkey) WITH ORDINALITY AS source_key(attnum,ord) ON true
       JOIN LATERAL unnest(fk.confkey) WITH ORDINALITY AS target_key(attnum,ord) ON target_key.ord=source_key.ord
       JOIN pg_attribute target_column ON target_column.attrelid=target.oid AND target_column.attnum=target_key.attnum
+      JOIN pg_attribute source_column ON source_column.attrelid=source.oid AND source_column.attnum=source_key.attnum
       WHERE fk.contype='f' AND target_ns.nspname='public' AND source_ns.nspname='public' AND target.relname='questions' AND target_column.attname='id'`),
   ]);
   const questionRows=(questionResult as {rows:QuestionRow[]}).rows;
   if(!questionRows.length)return null;
-  const foreignRows=(foreignKeyResult as {rows:{table_name:string}[]}).rows;
-  const unknownForeignKeyTables=[...new Set(foreignRows.map(row=>row.table_name).filter(name=>!knownQuestionDependents.has(name)))].sort();
+  const foreignRows=(foreignKeyResult as {rows:{schema_name:string;table_name:string;column_name:string}[]}).rows;
+  const unknownCandidates=[...new Map(foreignRows.filter(row=>!knownQuestionDependents.has(row.table_name)).map(row=>[`${row.schema_name}.${row.table_name}.${row.column_name}`,row])).values()];
+  const unknownForeignKeyTables:string[]=[];
+  for(const row of unknownCandidates){
+    const table=`${quoteIdentifier(row.schema_name)}.${quoteIdentifier(row.table_name)}`;
+    const column=quoteIdentifier(row.column_name);
+    const result=await executor.execute(sql`SELECT count(*)::int AS count FROM ${sql.raw(table)} WHERE ${sql.raw(column)} = ${questionId}::uuid`);
+    if(Number((result as {rows:{count:number|string}[]}).rows[0]?.count??0)>0)unknownForeignKeyTables.push(row.table_name);
+  }
+  const actualUnknownForeignKeyTables=[...new Set(unknownForeignKeyTables)].sort();
   const question=questionRows[0];
   const dependencies={
     quizLinkCount:question.quiz_links.length,
@@ -45,10 +56,11 @@ export async function inspectQuestionPurge(executor:SqlExecutor,questionId:strin
     answerCount:Number(question.answer_count),
     snapshotCount:Number(question.snapshot_count),
     competitionCount:Number(question.competition_count),
+    learningHistoryCount:Number(question.learning_history_count),
     revisionCount:Number(question.revision_count),
     duplicateReferenceCount:Number(question.duplicate_reference_count),
     unknownForeignKeyTables,
   };
   const assessment=assessQuestionPurge(question.status,dependencies);
-  return{...question,...assessment,unknownForeignKeyTables};
+  return{...question,...assessment,unknownForeignKeyTables:actualUnknownForeignKeyTables};
 }
