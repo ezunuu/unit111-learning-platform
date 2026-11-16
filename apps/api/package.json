@@ -10,6 +10,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/seed.ts",
+    "db:import-content": "tsx src/import-deployment-content.ts",
     "bootstrap:admin": "tsx src/bootstrap-admin.ts",
     "test": "npm run build && node --test dist/*.test.js",
     "test:integration": "node ../../scripts/test-postgres-integration.mjs"

@@ -165,6 +165,12 @@ HTTPS дээр нээж browser-ийн Install app үйлдлийг ашигла
 
 ## Тест ба одоогийн хамрах хүрээ
 
+### Domain багцад сургалтын өгөгдөл оруулах
+
+`apps/api/data/deployment-content.json` нь локал `unit111_admin_test` сангаас гаргасан сургалтын агуулгын snapshot. Үүнд ангилал, чиглэл, хөтөлбөр, бүлэг, хичээл, асуулт/сонголт, хичээл-асуултын холбоос болон сургалтын сорил орно. Хэрэглэгч, password hash, session, XP, progress, attempt, хариулт болон audit history орохгүй. Нийтлэлийн төлөвийг хадгалж, өмнөх reviewer-ийн хэрэглэгчийн ID-г зөөхгүй; import audit-д domain-ийн шинэ админы ID-г бүртгэнэ.
+
+Snapshot шинэчлэхдээ зөвхөн локал `unit111_admin_test`-ийг уншдаг `pnpm db:export-content` командыг ашиглана. Domain-ийн шинэ database дээр migration, ангиллын seed, интерактив админ bootstrap-ийг ажиллуулсны дараа л `UNIT111_CONTENT_IMPORT_CONFIRM=I_VERIFIED_TARGET_DATABASE` тохируулж `pnpm --filter @unit111/api db:import-content` ажиллуулна. Импорт зөвхөн course, lesson, question, quiz, progress болон attempt-гүй database-д хийгдэнэ; байсан өгөгдлийг overwrite хийхгүй. Нууц credential-ийг зөвхөн hosting-ийн нууц тохиргоонд оруулж, ZIP эсвэл repository-д хадгалахгүй.
+
 - API scoring unit test: `pnpm --filter @unit111/api test`.
 - TypeScript шалгалт: `pnpm --filter @unit111/api typecheck` болон `pnpm --filter @unit111/web typecheck`.
 - Production frontend build: `pnpm --filter @unit111/web build`.
