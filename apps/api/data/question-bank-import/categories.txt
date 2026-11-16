@@ -1,0 +1,12 @@
+Access Panels	3
+Cabin Structure	3
+Cowling	2
+Doors	8
+Drain Lines	2
+Fuselage	18
+General	78
+Levelling	4
+Reference Planes	7
+Windows	3
+Ерөнхий техникийн мэдлэг	479
+Монгол Улсын цэргийн нийтлэг дүрмүүд	156
